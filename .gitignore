@@ -1,0 +1,73 @@
+# ── Databases (large, regenerable) ───────────────────────────────
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# ── Python ───────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+*.egg
+dist/
+build/
+.venv/
+venv/
+.python-version
+
+# ── Runtime state (regenerable per session) ─────────────────────
+*_state.json
+*_state_*.json
+paper_portfolio_full_state.json
+portfolio_history.json
+alert_history.json
+
+# ── Reports & generated output (not source) ─────────────────────
+*.pdf
+paper_portfolio_report_*.txt
+paper_rebalancing_report_*.txt
+portfolio_technical_report.txt
+
+# ── Logs ─────────────────────────────────────────────────────────
+logs/
+*.log
+*.log.backup
+*.log.old
+
+# ── Data files (large / transient) ──────────────────────────────
+*.jsonl
+backtest_results/
+analysis_results/
+today_schedule.txt
+embeddings/
+
+# ── Secrets (must NEVER be committed) ────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+coinbase_usd_pairs.json
+
+# ── Backups ──────────────────────────────────────────────────────
+*.backup
+*.backup.*
+*.bak
+
+# ── OS / Editor ──────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# ── Monitoring (operational, not source) ─────────────────────────
+monitoring/
+
+# ── Archive (old scripts, not part of clean source) ──────────────
+archive/
