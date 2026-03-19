@@ -16,6 +16,9 @@ from dataclasses import asdict
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
+import numpy as np
+import pandas as pd
+
 from .metrics import BacktestResult, BacktestMetrics
 from .strategies import STRATEGY_REGISTRY
 
