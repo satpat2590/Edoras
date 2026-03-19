@@ -191,15 +191,26 @@ def apply_template(
         (portfolio_id,),
     )
 
-    # Insert new assignments
+    # Upsert new assignments
     for alloc in allocations:
         sid = strategy_id_map.get(alloc["strategy"])
         if sid:
-            conn.execute("""
-                INSERT INTO portfolio_strategies
-                (portfolio_id, strategy_id, allocation_pct, is_active, assigned_at)
-                VALUES (?, ?, ?, 1, datetime('now'))
-            """, (portfolio_id, sid, round(alloc["weight"] * 100, 2)))
+            existing = conn.execute(
+                "SELECT id FROM portfolio_strategies WHERE portfolio_id = ? AND strategy_id = ?",
+                (portfolio_id, sid)
+            ).fetchone()
+            if existing:
+                conn.execute("""
+                    UPDATE portfolio_strategies
+                    SET allocation_pct = ?, is_active = 1, assigned_at = datetime('now'), retired_at = NULL
+                    WHERE portfolio_id = ? AND strategy_id = ?
+                """, (round(alloc["weight"] * 100, 2), portfolio_id, sid))
+            else:
+                conn.execute("""
+                    INSERT INTO portfolio_strategies
+                    (portfolio_id, strategy_id, allocation_pct, is_active, assigned_at)
+                    VALUES (?, ?, ?, 1, datetime('now'))
+                """, (portfolio_id, sid, round(alloc["weight"] * 100, 2)))
 
     conn.commit()
     conn.close()
