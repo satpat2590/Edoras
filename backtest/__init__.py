@@ -14,6 +14,10 @@ from .compare import compare_strategies, ComparisonResult
 from .report import generate_report, generate_comparison_report
 from .catalogue import StrategyCatalogue
 from .deployer import sync_registry, apply_template, swap_strategy, get_strategy_id_map
+from .validation import (
+    anchored_walk_forward, cost_sensitivity, holdout_gate,
+    OOSResult, WalkForwardResult, CostSensitivityResult,
+)
 
 
 def run_backtest(
@@ -67,4 +71,10 @@ __all__ = [
     "apply_template",
     "swap_strategy",
     "get_strategy_id_map",
+    "anchored_walk_forward",
+    "cost_sensitivity",
+    "holdout_gate",
+    "OOSResult",
+    "WalkForwardResult",
+    "CostSensitivityResult",
 ]

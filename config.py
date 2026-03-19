@@ -162,7 +162,7 @@ MIN_DAYS_FOR_DRAWDOWN = 30
 MIN_DAYS_FOR_CORRELATION = 30
 
 # ── Backfill ─────────────────────────────────────────────────────────────
-DEFAULT_BACKFILL_DAYS = 400  # > 1 year
+DEFAULT_BACKFILL_DAYS = 1100  # ~3 years for statistical significance
 
 # ── Live execution safety limits ─────────────────────────────────────────
 LIVE_MAX_SINGLE_ORDER_USD = 50.0

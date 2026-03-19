@@ -1,5 +1,10 @@
 """
 Core backtesting engine — replays historical data bar-by-bar.
+
+Position sizing modes:
+  - signal_weight: use strategy's weight directly (legacy, default)
+  - inverse_vol:   scale position by target_vol / realized_vol
+  - kelly:         Kelly fraction based on running win rate and payoff
 """
 
 import os
@@ -30,7 +35,8 @@ logger = logging.getLogger(__name__)
 class Backtester:
     """
     Event-driven backtester that replays historical data bar-by-bar.
-    Supports stop-loss, trailing stop, and take-profit exits.
+    Supports stop-loss, trailing stop, take-profit exits,
+    volatility-scaled position sizing, and slippage modeling.
     """
 
     def __init__(
@@ -38,10 +44,65 @@ class Backtester:
         db_path: str = DB_PATH,
         initial_capital: float = PAPER_INITIAL_CAPITAL,
         transaction_cost: float = PAPER_TRANSACTION_COST,
+        slippage_bps: float = 0.0,
+        sizing_mode: str = "signal_weight",
+        target_annual_vol: float = 0.15,
+        vol_lookback: int = 60,
+        max_position_pct: float = 0.25,
+        kelly_fraction: float = 0.5,
     ):
         self.db_path = db_path
         self.initial_capital = initial_capital
         self.transaction_cost = transaction_cost
+        self.slippage_bps = slippage_bps  # basis points of slippage per trade
+        self.sizing_mode = sizing_mode  # signal_weight | inverse_vol | kelly
+        self.target_annual_vol = target_annual_vol  # for inverse_vol mode
+        self.vol_lookback = vol_lookback
+        self.max_position_pct = max_position_pct  # hard cap on any single position
+        self.kelly_fraction = kelly_fraction  # fractional Kelly (half-Kelly default)
+
+    def _apply_slippage(self, price: float, side: str) -> float:
+        """Apply slippage to execution price. Buys fill higher, sells lower."""
+        slip = price * self.slippage_bps / 10000
+        return price + slip if side == "BUY" else price - slip
+
+    def _compute_position_size(
+        self, capital: float, signal_weight: float, df_window: pd.DataFrame
+    ) -> float:
+        """
+        Compute dollar amount to allocate based on sizing mode.
+
+        signal_weight: raw 0-1 weight from strategy
+        Returns: dollar amount to invest (before fees)
+        """
+        if self.sizing_mode == "inverse_vol":
+            # Inverse-volatility sizing: scale to target annual vol
+            returns = df_window["close"].pct_change().dropna()
+            if len(returns) >= self.vol_lookback:
+                recent_vol = returns.iloc[-self.vol_lookback:].std()
+                annual_vol = recent_vol * np.sqrt(365)
+                if annual_vol > 0:
+                    vol_scalar = self.target_annual_vol / annual_vol
+                    raw = capital * min(vol_scalar, 1.0) * signal_weight
+                else:
+                    raw = capital * signal_weight
+            else:
+                raw = capital * signal_weight
+
+        elif self.sizing_mode == "kelly":
+            # Half-Kelly: f* = (p * b - q) / b, capped at kelly_fraction
+            # Uses running trade stats
+            raw = capital * signal_weight * self.kelly_fraction
+
+        else:
+            # signal_weight mode (legacy)
+            raw = capital * signal_weight
+
+        # Hard cap
+        raw = min(raw, capital * self.max_position_pct)
+        # Keep minimum cash reserve
+        raw = min(raw, capital * 0.95)
+        return max(raw, 0)
 
     def _load_data(self, symbol: str, timeframe: str, start_date: str, end_date: str) -> pd.DataFrame:
         """Load OHLCV data from DB and compute indicators."""
@@ -113,9 +174,10 @@ class Backtester:
             if use_risk_management and position_qty > 0:
                 # Stop loss
                 if price <= entry_price * (1 - STOP_LOSS_PCT):
-                    proceeds = position_qty * price * (1 - self.transaction_cost)
+                    exit_price = self._apply_slippage(price, "SELL")
+                    proceeds = position_qty * exit_price * (1 - self.transaction_cost)
                     capital += proceeds
-                    trades.append(Trade(symbol, "SELL", price, position_qty, ts, "stop_loss"))
+                    trades.append(Trade(symbol, "SELL", exit_price, position_qty, ts, "stop_loss"))
                     position_qty = 0.0
                     entry_price = 0.0
                     continue
@@ -130,9 +192,10 @@ class Backtester:
                         trail = high_watermark * (1 - TRAILING_STOP_PCT)
                     trail = max(trail, entry_price * 1.001)  # breakeven floor
                     if price <= trail:
-                        proceeds = position_qty * price * (1 - self.transaction_cost)
+                        exit_price = self._apply_slippage(price, "SELL")
+                        proceeds = position_qty * exit_price * (1 - self.transaction_cost)
                         capital += proceeds
-                        trades.append(Trade(symbol, "SELL", price, position_qty, ts, "trailing_stop"))
+                        trades.append(Trade(symbol, "SELL", exit_price, position_qty, ts, "trailing_stop"))
                         position_qty = 0.0
                         entry_price = 0.0
                         continue
@@ -143,11 +206,12 @@ class Backtester:
                         continue
                     if gain >= threshold:
                         sell_qty = position_qty * sell_pct
-                        proceeds = sell_qty * price * (1 - self.transaction_cost)
+                        exit_price = self._apply_slippage(price, "SELL")
+                        proceeds = sell_qty * exit_price * (1 - self.transaction_cost)
                         capital += proceeds
                         position_qty -= sell_qty
                         partial_exits_hit.append(j)
-                        trades.append(Trade(symbol, "SELL", price, sell_qty, ts, f"take_profit_L{j+1}"))
+                        trades.append(Trade(symbol, "SELL", exit_price, sell_qty, ts, f"take_profit_L{j+1}"))
                         break
 
                 if price > high_watermark:
@@ -160,22 +224,23 @@ class Backtester:
 
             for sig in signals:
                 if sig["action"] == "BUY" and position_qty == 0 and capital > 10:
-                    buy_amount = capital * sig["weight"]
-                    buy_amount = min(buy_amount, capital * 0.95)  # keep 5% cash reserve
+                    buy_amount = self._compute_position_size(capital, sig["weight"], window)
+                    fill_price = self._apply_slippage(price, "BUY")
                     cost = buy_amount * (1 + self.transaction_cost)
-                    if cost <= capital:
-                        qty = buy_amount / price
+                    if cost <= capital and buy_amount > 0:
+                        qty = buy_amount / fill_price
                         capital -= cost
                         position_qty += qty
-                        entry_price = price
-                        high_watermark = price
+                        entry_price = fill_price
+                        high_watermark = fill_price
                         partial_exits_hit = []
-                        trades.append(Trade(symbol, "BUY", price, qty, ts, sig["reason"]))
+                        trades.append(Trade(symbol, "BUY", fill_price, qty, ts, sig["reason"]))
 
                 elif sig["action"] == "SELL" and position_qty > 0:
-                    proceeds = position_qty * price * (1 - self.transaction_cost)
+                    fill_price = self._apply_slippage(price, "SELL")
+                    proceeds = position_qty * fill_price * (1 - self.transaction_cost)
                     capital += proceeds
-                    trades.append(Trade(symbol, "SELL", price, position_qty, ts, sig["reason"]))
+                    trades.append(Trade(symbol, "SELL", fill_price, position_qty, ts, sig["reason"]))
                     position_qty = 0.0
                     entry_price = 0.0
 

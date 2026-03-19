@@ -319,6 +319,134 @@ class StrategyCatalogue:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def build_covariance_portfolio(
+        self,
+        name: str,
+        results: "List[BacktestResult]",
+        description: str = "",
+        max_positions: int = 8,
+        min_sharpe: float = 0.0,
+        min_trades: int = 5,
+    ) -> dict:
+        """
+        Build a portfolio template using covariance-aware allocation.
+
+        Instead of treating each strategy-symbol pair independently,
+        this uses the equity curves to build a return covariance matrix
+        and solves for maximum Sharpe (mean-variance optimal) weights.
+
+        Falls back to inverse-vol if covariance is singular.
+        """
+        import numpy as np
+
+        # Filter to valid results with equity curves
+        valid = [
+            r for r in results
+            if r.metrics.sharpe_ratio >= min_sharpe
+            and r.metrics.total_trades >= min_trades
+            and len(r.equity_curve) > 30
+        ]
+        if not valid:
+            logger.warning("No valid results for covariance portfolio")
+            return {}
+
+        # Take best per symbol (avoid double-counting)
+        best_by_symbol = {}
+        for r in sorted(valid, key=lambda x: x.metrics.sharpe_ratio, reverse=True):
+            if r.symbol not in best_by_symbol:
+                best_by_symbol[r.symbol] = r
+        valid = list(best_by_symbol.values())[:max_positions]
+
+        if len(valid) < 2:
+            # Can't build covariance with <2 assets; fall back to equal weight
+            logger.info("< 2 assets, using equal weight")
+            weight = round(1.0 / len(valid), 4)
+            allocations = [{
+                "strategy": r.strategy_name, "symbol": r.symbol,
+                "timeframe": r.timeframe, "weight": weight,
+                "sharpe": r.metrics.sharpe_ratio, "return": r.metrics.total_return,
+                "max_dd": r.metrics.max_drawdown,
+            } for r in valid]
+        else:
+            # Build return matrix — align all equity curves to common dates
+            returns_dict = {}
+            for r in valid:
+                key = f"{r.strategy_name}|{r.symbol}"
+                eq_returns = r.equity_curve.pct_change().dropna()
+                returns_dict[key] = eq_returns
+
+            returns_df = pd.DataFrame(returns_dict).dropna()
+
+            if len(returns_df) < 30:
+                logger.warning("Insufficient overlapping data for covariance, using inverse-vol")
+                vols = [returns_df[c].std() for c in returns_df.columns]
+                inv_vols = [1.0 / max(v, 1e-6) for v in vols]
+                total = sum(inv_vols)
+                weights = [iv / total for iv in inv_vols]
+            else:
+                mu = returns_df.mean().values * 365  # annualized
+                cov = returns_df.cov().values * 365
+
+                # Max-Sharpe via analytical solution (long-only, no constraints)
+                try:
+                    cov_inv = np.linalg.inv(cov)
+                    ones = np.ones(len(mu))
+                    raw_w = cov_inv @ mu
+                    # Enforce long-only: zero out negative weights, re-normalize
+                    raw_w = np.maximum(raw_w, 0)
+                    total_w = raw_w.sum()
+                    if total_w > 0:
+                        weights = (raw_w / total_w).tolist()
+                    else:
+                        # Fallback: inverse-vol
+                        vols = np.sqrt(np.diag(cov))
+                        inv_vols = 1.0 / np.maximum(vols, 1e-6)
+                        weights = (inv_vols / inv_vols.sum()).tolist()
+                except np.linalg.LinAlgError:
+                    logger.warning("Singular covariance matrix, using inverse-vol")
+                    vols = np.sqrt(np.diag(cov))
+                    inv_vols = 1.0 / np.maximum(vols, 1e-6)
+                    weights = (inv_vols / inv_vols.sum()).tolist()
+
+            allocations = []
+            for r, w in zip(valid, weights):
+                allocations.append({
+                    "strategy": r.strategy_name,
+                    "symbol": r.symbol,
+                    "timeframe": r.timeframe,
+                    "weight": round(w, 4),
+                    "sharpe": r.metrics.sharpe_ratio,
+                    "return": r.metrics.total_return,
+                    "max_dd": r.metrics.max_drawdown,
+                })
+
+        expected_sharpe = sum(a["sharpe"] * a["weight"] for a in allocations)
+        expected_return = sum(a["return"] * a["weight"] for a in allocations)
+        expected_max_dd = min(a["max_dd"] for a in allocations)
+
+        self.conn.execute("""
+            INSERT OR REPLACE INTO portfolio_templates
+            (name, description, strategy_allocations_json, selection_criteria,
+             expected_sharpe, expected_return, expected_max_dd, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        """, (
+            name, description, json.dumps(allocations),
+            json.dumps({"method": "covariance_aware", "max_positions": max_positions,
+                        "min_sharpe": min_sharpe, "min_trades": min_trades}),
+            expected_sharpe, expected_return, expected_max_dd,
+        ))
+        self.conn.commit()
+
+        return {
+            "name": name,
+            "method": "covariance_aware",
+            "allocations": allocations,
+            "expected_sharpe": expected_sharpe,
+            "expected_return": expected_return,
+            "expected_max_dd": expected_max_dd,
+            "positions": len(allocations),
+        }
+
     def summary(self) -> dict:
         """Quick summary of catalogue contents."""
         row = self.conn.execute("""
