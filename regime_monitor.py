@@ -27,6 +27,15 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+try:
+    from hmmlearn.hmm import GaussianHMM
+    HMM_AVAILABLE = True
+except ImportError:
+    HMM_AVAILABLE = False
+
+# Module-level cache for fitted HMM models per symbol
+_hmm_cache: Dict[str, dict] = {}  # symbol -> {"model": GaussianHMM, "fitted_at": datetime, "n_samples": int}
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import DB_PATH, get_active_portfolios
@@ -59,15 +68,132 @@ STRATEGY_REGIME_FIT = {
 }
 
 
+def detect_regime_hmm(symbol: str, db_path: str = DB_PATH, timeframe: str = "1d",
+                      lookback: int = 120) -> Optional[dict]:
+    """HMM-based regime detection using GaussianHMM with 3 states.
+
+    Features: log returns, 20-day rolling volatility, 20-day rolling mean return.
+    States are mapped to bull/bear/sideways by the mean return of each state.
+
+    Returns dict matching detect_regime() format, or None if HMM cannot run.
+    """
+    if not HMM_AVAILABLE:
+        return None
+
+    conn = sqlite3.connect(db_path)
+    df = pd.read_sql_query(
+        "SELECT timestamp, close FROM candlesticks "
+        "WHERE symbol=? AND timeframe=? ORDER BY timestamp DESC LIMIT ?",
+        conn, params=(symbol, timeframe, lookback + 50),
+    )
+    conn.close()
+
+    if df.empty or len(df) < 120:
+        return None  # insufficient data for HMM
+
+    df = df.iloc[::-1].reset_index(drop=True)
+    close = df["close"].astype(float)
+
+    # Feature engineering
+    log_returns = np.log(close / close.shift(1)).dropna()
+    rolling_vol_20d = log_returns.rolling(20).std()
+    rolling_mean_ret_20d = log_returns.rolling(20).mean()
+
+    # Build feature matrix (drop NaN rows from rolling windows)
+    features_df = pd.DataFrame({
+        "log_return": log_returns,
+        "rolling_vol_20d": rolling_vol_20d,
+        "rolling_mean_ret_20d": rolling_mean_ret_20d,
+    }).dropna()
+
+    if len(features_df) < 120:
+        return None  # still not enough after dropping NaN
+
+    X = features_df.values  # shape: (n_samples, 3)
+
+    # Check cache — reuse model if fitted on similar data size recently
+    cache_key = f"{symbol}_{timeframe}"
+    cached = _hmm_cache.get(cache_key)
+    refit = True
+    if cached:
+        age_minutes = (datetime.now() - cached["fitted_at"]).total_seconds() / 60
+        # Refit every 6 hours or if data size changed significantly
+        if age_minutes < 360 and abs(cached["n_samples"] - len(X)) < 10:
+            refit = False
+
+    if refit:
+        model = GaussianHMM(
+            n_components=3,
+            covariance_type="full",
+            n_iter=100,
+            random_state=42,
+        )
+        model.fit(X)
+        _hmm_cache[cache_key] = {
+            "model": model,
+            "fitted_at": datetime.now(),
+            "n_samples": len(X),
+        }
+    else:
+        model = cached["model"]
+
+    # Predict hidden states and get posterior probabilities
+    hidden_states = model.predict(X)
+    posteriors = model.predict_proba(X)
+
+    # Map states to bull/bear/sideways by mean return of each state
+    # means_[:, 0] is the mean log return for each state
+    state_mean_returns = model.means_[:, 0]  # log_return is feature 0
+    sorted_states = np.argsort(state_mean_returns)  # ascending
+    state_map = {
+        int(sorted_states[0]): "bear",     # lowest mean return
+        int(sorted_states[1]): "sideways",  # middle mean return
+        int(sorted_states[2]): "bull",      # highest mean return
+    }
+
+    # Current state = last observation
+    current_state = int(hidden_states[-1])
+    regime = state_map[current_state]
+    confidence = float(posteriors[-1, current_state])
+
+    details = {
+        "method": "hmm",
+        "state_means": {state_map[i]: round(float(model.means_[i, 0]), 6)
+                        for i in range(3)},
+        "state_vols": {state_map[i]: round(float(model.means_[i, 1]), 6)
+                       for i in range(3)},
+        "posterior": {state_map[i]: round(float(posteriors[-1, i]), 4)
+                      for i in range(3)},
+        "n_samples": len(X),
+        "hmm_score": round(float(model.score(X)), 2),
+    }
+
+    return {"regime": regime, "confidence": confidence, "details": details}
+
+
 def detect_regime(symbol: str, db_path: str = DB_PATH, timeframe: str = "1d",
                   lookback: int = 120) -> dict:
     """Detect the current market regime for a symbol.
+
+    Tries HMM-based detection first; falls back to heuristic scoring if HMM
+    fails, is unavailable, or has insufficient data.
 
     Returns dict with:
       - regime: "bull", "bear", or "sideways"
       - confidence: 0-1
       - details: dict of supporting indicators
     """
+    # Try HMM first
+    try:
+        hmm_result = detect_regime_hmm(symbol, db_path, timeframe, lookback)
+        if hmm_result is not None:
+            logger.info(f"[{symbol}] HMM regime: {hmm_result['regime']} "
+                        f"(conf={hmm_result['confidence']:.2f})")
+            return hmm_result
+    except Exception as e:
+        logger.warning(f"[{symbol}] HMM detection failed, falling back to heuristic: {e}")
+
+    # Heuristic fallback
     conn = sqlite3.connect(db_path)
     df = pd.read_sql_query(
         "SELECT timestamp, open, high, low, close, volume "
@@ -180,6 +306,7 @@ def detect_regime(symbol: str, db_path: str = DB_PATH, timeframe: str = "1d",
     confidence = scores[regime] / total
 
     details = {
+        "method": "heuristic",
         "adx": round(adx, 1),
         "sma_slope": round(sma_slope, 4),
         "ret_30d": round(ret_30d, 4),
@@ -283,6 +410,19 @@ def check_and_swap(
             f"[{symbol}] regime={regime} (conf={confidence:.2f}) "
             f"current={current_strategy or 'none'}"
         )
+
+        # Store regime result in market_regime table
+        try:
+            store_conn = sqlite3.connect(db_path)
+            today = datetime.now().strftime("%Y-%m-%d")
+            store_conn.execute(
+                "INSERT OR REPLACE INTO market_regime (date, regime) VALUES (?, ?)",
+                (today, regime),
+            )
+            store_conn.commit()
+            store_conn.close()
+        except Exception as e:
+            logger.warning(f"[{symbol}] Failed to store regime in market_regime: {e}")
 
         # Skip low-confidence detections
         if confidence < min_confidence:

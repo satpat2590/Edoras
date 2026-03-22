@@ -91,7 +91,14 @@ class TradingAgent:
     def signal_system(self):
         if self._signal_system is None:
             from signal_trading import SignalTradingSystem
-            self._signal_system = SignalTradingSystem(db_path=self.db_path, test_mode=True)
+            from config import get_active_portfolios
+            # Use Galadriel's config (portfolio_id=1) so routing is respected
+            portfolios = get_active_portfolios(db_path=self.db_path)
+            galadriel = next((p for p in portfolios if p["id"] == 1), None)
+            self._signal_system = SignalTradingSystem(
+                db_path=self.db_path, test_mode=True,
+                portfolio_config=galadriel,
+            )
         return self._signal_system
 
     @property
@@ -282,7 +289,7 @@ class TradingAgent:
 
         # 4. Technical signals
         try:
-            result = self.signal_system.check_all_symbols(timeframe="1h")
+            result = self.signal_system.check_all_symbols()
             if isinstance(result, tuple):
                 signals, risk_exits, risk_report = result
             else:
