@@ -49,10 +49,10 @@ class CryptoDataCollector:
         self.portfolio_symbols = []
         
         # Timeframe definitions (Coinbase granularity strings)
+        # Note: 4h is built by aggregating 1h candles (see aggregate_4h_candles).
         self.timeframes = {
             '1h': 'ONE_HOUR',
-            '4h': 'SIX_HOUR',  # Coinbase doesn't have 4h, using 6h
-            '1d': 'ONE_DAY'
+            '1d': 'ONE_DAY',
         }
     
     def _get_connection(self):
@@ -230,9 +230,10 @@ class CryptoDataCollector:
         coinbase_granularity = self.timeframes.get(timeframe)
         
         if not coinbase_granularity:
-            # Try alternatives
             if timeframe == '4h':
-                coinbase_granularity = 'SIX_HOUR'  # Fallback to 6h
+                # 4h is built from 1h aggregation — fetch 1h instead
+                logger.debug(f"4h requested for {symbol} — use aggregate_4h_candles() instead")
+                return []
             else:
                 coinbase_granularity = 'ONE_DAY'
         
@@ -312,6 +313,71 @@ class CryptoDataCollector:
         
         return saved_count
     
+    def aggregate_4h_candles(self, symbol: str, lookback_days: int = 14) -> int:
+        """Build 4h candles by aggregating 1h candles at UTC boundaries (00,04,08,12,16,20).
+
+        This replaces the old approach of fetching Coinbase SIX_HOUR candles and
+        mislabeling them as 4h.  Call after 1h data has been refreshed.
+
+        Returns the number of new 4h candles inserted.
+        """
+        conn = sqlite3.connect(self.db_path)
+        cutoff_ts = int((datetime.now() - timedelta(days=lookback_days)).timestamp())
+
+        # Pull 1h candles within the lookback window
+        df = pd.read_sql_query(
+            "SELECT timestamp, open, high, low, close, volume "
+            "FROM candlesticks WHERE symbol=? AND timeframe='1h' AND timestamp>=? "
+            "ORDER BY timestamp",
+            conn,
+            params=(symbol, cutoff_ts),
+        )
+        if df.empty:
+            conn.close()
+            return 0
+
+        # Assign each 1h candle to its 4h bucket (floor to 4h boundary)
+        df["bucket"] = (df["timestamp"] // (4 * 3600)) * (4 * 3600)
+
+        agg = (
+            df.groupby("bucket")
+            .agg(
+                open=("open", "first"),
+                high=("high", "max"),
+                low=("low", "min"),
+                close=("close", "last"),
+                volume=("volume", "sum"),
+                count=("timestamp", "count"),
+            )
+            .reset_index()
+        )
+
+        # Only keep complete 4h bars (4 hourly candles)
+        agg = agg[agg["count"] == 4]
+
+        inserted = 0
+        cursor = conn.cursor()
+        for _, row in agg.iterrows():
+            try:
+                cursor.execute(
+                    "INSERT OR REPLACE INTO candlesticks "
+                    "(symbol, timeframe, timestamp, open, high, low, close, volume) "
+                    "VALUES (?, '4h', ?, ?, ?, ?, ?, ?)",
+                    (symbol, int(row["bucket"]), row["open"], row["high"],
+                     row["low"], row["close"], row["volume"]),
+                )
+                if cursor.rowcount > 0:
+                    inserted += 1
+            except Exception as e:
+                logger.error(f"Error inserting 4h candle for {symbol}: {e}")
+
+        conn.commit()
+        conn.close()
+
+        if inserted > 0:
+            logger.info(f"Aggregated {inserted} 4h candles for {symbol}")
+        return inserted
+
     def backfill_symbol(self, symbol: str, timeframe: str = '1d', days_back: int = 365):
         """Backfill historical data for a symbol"""
         logger.info(f"Backfilling {symbol} {timeframe} for {days_back} days")

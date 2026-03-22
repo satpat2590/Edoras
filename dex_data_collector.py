@@ -252,6 +252,22 @@ class DexDataCollector:
                 inserted = self.save_candlesticks(symbol, tf, candles)
                 logger.info(f"  {tf}: fetched {len(candles)}, inserted {inserted}")
 
+        # 3. Compute indicators for DEX symbols (candles are useless without them)
+        try:
+            from crypto_data_collector import CryptoDataCollector
+            ind_calc = CryptoDataCollector(db_path=self.db_path)
+            for token in tokens:
+                sym = token["symbol"]
+                for tf in tf_map:
+                    try:
+                        n = ind_calc.calculate_indicators(sym, tf)
+                        if n and n > 0:
+                            logger.info(f"  {sym} {tf}: {n} indicator rows computed")
+                    except Exception as e:
+                        logger.debug(f"  {sym} {tf} indicators skipped: {e}")
+        except Exception as e:
+            logger.warning(f"Indicator computation failed: {e}")
+
         logger.info("\n=== Collection complete ===")
 
     def metadata_only(self):

@@ -12,7 +12,7 @@ A modular, strategy-routed multi-asset trading system with regime-adaptive portf
 - **Risk management** — stop-loss, trailing stops (ATR-based), take-profit scale-out, circuit breaker, position/sector limits, VIX regime filter
 - **Multi-portfolio** — isolated portfolios with per-symbol strategy routing, independent state, and full trade audit trail
 - **Multi-asset** — crypto (CEX via Coinbase), DEX (via Bankr API on Base/Ethereum), equities (via yfinance), prediction markets (Polymarket)
-- **Real-time data** — WebSocket streaming (Coinbase, Polymarket) with 5m candle aggregation, hourly rollups, and indicator recomputation
+- **Real-time data** — WebSocket streaming (Coinbase, Polymarket) with 5m candle aggregation, hourly rollups, and 1h→4h candle aggregation at UTC boundaries (Coinbase has no native 4h granularity)
 - **PDF reports** — dark-themed backtest reports, equity curves, monthly return heatmaps, strategy comparison charts
 - **Systemd scheduling** — all jobs survive laptop suspend/resume with `Persistent=true`
 
@@ -35,7 +35,7 @@ source ~/.config/edoras.env
 python3 bootstrap_db.py
 python3 migration/phase1_warehouse_redesign.py
 
-# Backfill historical data (400+ days)
+# Backfill historical data (1100+ days for statistical significance)
 python3 historical_backfill.py
 
 # Run backtests

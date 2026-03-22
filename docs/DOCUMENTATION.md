@@ -46,7 +46,7 @@ Multi-asset, multi-exchange quantitative trading system covering cryptocurrency 
 │  │ └── binary profile: 16 indicators (prob momentum, bands)  │        │
 │  └──────────────────────────────────────────────────────────┘        │
 │  ┌─────────────┐  ┌─────────────────┐  ┌───────────────────┐        │
-│  │7 Backtested │  │Portfolio Scoring │  │Risk Metrics       │        │
+│  │13 Backtested│  │Portfolio Scoring │  │Risk Metrics       │        │
 │  │Strategies   │  │(5-component)     │  │(Sharpe, VaR, etc) │        │
 │  └─────────────┘  └─────────────────┘  └───────────────────┘        │
 └──────────────────────────────────────────────────────────────────────┘
@@ -72,7 +72,7 @@ Multi-asset, multi-exchange quantitative trading system covering cryptocurrency 
 1. **Real-time ingestion**: WebSocket feeds (Coinbase + Polymarket) aggregate ticks into 5m candles, roll up to 1h/4h
 2. **REST gap-fill**: Periodic REST polling catches any missed candles (crypto every 4h, Polymarket every 4h, equity daily)
 3. **Indicators**: Profile-gated computation — standard (17) for crypto/equity, binary (16) for prediction markets
-4. **Strategy routing**: Per-symbol strategy + timeframe from DB config; backtested fires first, legacy fallback if silent
+4. **Strategy routing**: Per-symbol strategy + timeframe from DB config; routed symbols use backtested strategy exclusively (no legacy fallback — silence means hold). Unrouted symbols use legacy signal logic.
 5. **Signal pipeline**: Risk checks → regime adjustment → signal dedup → multi-portfolio iteration
 6. **Execution**: Paper trading with DB position sync, trade journal outcome tracking
 7. **Reporting**: Automated Telegram messages with analysis results, portfolio snapshots

@@ -117,10 +117,10 @@ def main():
         
         # Step 3: Update latest data for all symbols and timeframes
         logger.info("Step 3: Updating latest data...")
-        timeframes = ['1d', '4h', '1h']
-        
+        api_timeframes = ['1d', '1h']  # fetch from Coinbase API
+
         for symbol in symbols:
-            for timeframe in timeframes:
+            for timeframe in api_timeframes:
                 try:
                     logger.info(f"  Updating {symbol} {timeframe}...")
                     saved = collector.update_latest_data(symbol, timeframe, lookback_days=7)
@@ -128,11 +128,22 @@ def main():
                         logger.info(f"    Added {saved} new candles")
                 except Exception as e:
                     logger.warning(f"    Error updating {symbol} {timeframe}: {e}")
-        
+
+        # Step 3b: Aggregate 1h → true 4h candles
+        logger.info("Step 3b: Aggregating 1h → 4h candles...")
+        for symbol in symbols:
+            try:
+                agg = collector.aggregate_4h_candles(symbol, lookback_days=14)
+                if agg > 0:
+                    logger.info(f"  Aggregated {agg} 4h candles for {symbol}")
+            except Exception as e:
+                logger.warning(f"  Error aggregating 4h for {symbol}: {e}")
+
         # Step 4: Calculate technical indicators
         logger.info("Step 4: Calculating technical indicators...")
+        all_timeframes = ['1d', '4h', '1h']
         for symbol in symbols:
-            for timeframe in timeframes:
+            for timeframe in all_timeframes:
                 try:
                     indicators = collector.calculate_indicators(symbol, timeframe)
                     if indicators > 0:

@@ -198,12 +198,20 @@ projects/edoras/          # Main project root
 
 ### Collection Pipeline
 ```
-Coinbase API ──1h/4h/1d candles──> crypto_data_collector.py ──> candlesticks table
+Coinbase API ──1h/1d candles─────> crypto_data_collector.py ──> candlesticks table
+                                   └── aggregate_4h_candles()   (1h → 4h rollup at
+                                       UTC boundaries 00/04/08/12/16/20)
 yfinance     ──daily OHLCV──────> equity_data_collector.py ──> candlesticks table
 Coinbase API ──1h portfolio──────> intraday_update.py ──────> candlesticks table
+                                   └── also triggers 4h aggregation + 4h indicators
 RSS feeds    ──headlines─────────> sentiment.py ────────────> sentiment_scores table
 Polymarket   ──contract data─────> providers/polymarket.py ─> (external storage)
 ```
+
+> **Note:** Coinbase API does not offer a native 4-hour granularity. All 4h candles
+> are built by aggregating four consecutive 1h candles. Only complete 4h bars
+> (exactly 4 hourly candles) are stored. This runs in both the daily collection
+> and the intraday update cycle.
 
 ### Indicator Pipeline
 ```
@@ -223,19 +231,25 @@ candlesticks ──> indicator_calculator.calculate_all_indicators()
 ### Signal Pipeline
 ```
 indicators ──> signal_trading.py
+               │
+               Routed symbols (backtested strategy assigned):
+               │  Strategy decides exclusively — no legacy fallback.
+               │  If strategy is silent, system holds.
+               │  Signals carry strategy_id for trade attribution.
+               │
+               Unrouted symbols (legacy logic):
                ├── Mean-reversion signals (RSI extremes + MACD confirmation)
                ├── Trend-following signals (pullback/rally + SMA alignment)
                ├── Momentum breakout signals (price vs SMA + volume)
-               ├── Backtested strategy signals (ScoreBased, Bollinger, MultiSignal)
                │
-               Signal Enhancement:
+               Signal Enhancement (legacy only):
                ├── Sentiment adjustment (+/- 5-10%)
                ├── ADX regime filter (30+ = confirmed trend)
                ├── Volume confirmation bonus
                ├── Multi-timeframe alignment (up to 1.3x)
                └── Market regime adjustment
            ──> BUY/SELL decisions
-           ──> paper_trading.py (execution)
+           ──> paper_trading.py (execution, with strategy_id on trade row)
            ──> trades table + positions table
 ```
 

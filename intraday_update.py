@@ -277,10 +277,10 @@ class IntradayUpdater:
         
         for symbol in self.PORTFOLIO_SYMBOLS:
             logger.info(f"Processing {symbol}...")
-            
-            # Update candlestick data
+
+            # Update 1h candlestick data
             self.update_candlestick_data(symbol)
-            
+
             # Check for signals
             signals = self.check_signals(symbol)
             if signals:
@@ -291,6 +291,17 @@ class IntradayUpdater:
                         'description': description,
                         'timestamp': datetime.now().isoformat()
                     })
+
+        # Aggregate 1h → 4h candles and compute 4h indicators
+        try:
+            from crypto_data_collector import CryptoDataCollector
+            collector = CryptoDataCollector(db_path=self.db_path)
+            for symbol in self.PORTFOLIO_SYMBOLS:
+                collector.aggregate_4h_candles(symbol, lookback_days=7)
+                self.calculate_indicators(symbol, '4h')
+            logger.info("4h candle aggregation + indicators complete")
+        except Exception as e:
+            logger.warning(f"4h aggregation failed: {e}")
         
         elapsed = time.time() - start_time
         logger.info(f"Intra‑day update completed in {elapsed:.1f} seconds")
