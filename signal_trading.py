@@ -40,12 +40,20 @@ try:
 except ImportError:
     CORRELATION_AVAILABLE = False
 
+# Import Polymarket signal generator
 try:
-    from config import PORTFOLIO_SYMBOLS as CONFIG_PORTFOLIO_SYMBOLS, DB_PATH, get_active_portfolios
+    from polymarket_signals import PolymarketSignalGenerator
+    POLYMARKET_SIGNALS_AVAILABLE = True
+except ImportError:
+    POLYMARKET_SIGNALS_AVAILABLE = False
+
+try:
+    from config import PORTFOLIO_SYMBOLS as CONFIG_PORTFOLIO_SYMBOLS, DB_PATH, get_active_portfolios, get_asset_class_profile
 except ImportError:
     CONFIG_PORTFOLIO_SYMBOLS = ["BTC-USD", "ETH-USD", "BNB-USD", "GRT-USD"]
     DB_PATH = "crypto_data.db"
     get_active_portfolios = None
+    get_asset_class_profile = None
 
 # Import backtested strategies — prefer modular backtest package, fall back to monolith
 try:
@@ -229,6 +237,18 @@ class SignalTradingSystem:
             except Exception as e:
                 logger.warning(f"Correlation tracker unavailable: {e}")
 
+        # Initialize Polymarket signal overlay
+        self.polymarket_generator = None
+        if POLYMARKET_SIGNALS_AVAILABLE:
+            try:
+                self.polymarket_generator = PolymarketSignalGenerator(
+                    db_path=db_path,
+                    min_probability_delta=0.05,
+                )
+                logger.info(f"[{self.portfolio_name}] Polymarket signal overlay loaded")
+            except Exception as e:
+                logger.warning(f"Polymarket signals unavailable: {e}")
+
         self.load_trade_state()
     
     def load_trade_state(self):
@@ -324,6 +344,48 @@ class SignalTradingSystem:
             "timestamp": int(latest["timestamp"]),
         }
 
+    def _get_polymarket_signals(self) -> List[Dict]:
+        """Fetch Polymarket probability-shift signals mapped to crypto symbols.
+
+        Returns a list of signal dicts compatible with the main signal pipeline.
+        Each signal carries source='polymarket' and the originating PM symbol.
+        """
+        if not self.polymarket_generator:
+            return []
+        try:
+            pm_signals = self.polymarket_generator.generate_signals()
+        except Exception as e:
+            logger.warning(f"Polymarket signal generation failed: {e}")
+            return []
+        if not pm_signals:
+            return []
+
+        # Only keep signals for symbols in this portfolio
+        portfolio_symbols = set(self.PORTFOLIO_SYMBOLS)
+        results = []
+        for pm in pm_signals:
+            if pm["symbol"] not in portfolio_symbols:
+                continue
+            results.append({
+                "symbol": pm["symbol"],
+                "action": pm["action"],
+                "strength": pm["strength"],
+                "reason": pm["reason"],
+                "rsi": None,
+                "macd_hist": None,
+                "timestamp": int(datetime.now().timestamp()),
+                "_strategy_name": "polymarket_overlay",
+                "_timeframe": "event",
+                "_source": "polymarket",
+                "_pm_symbol": pm.get("polymarket_symbol"),
+                "_probability_delta": pm.get("probability_delta"),
+            })
+
+        if results:
+            logger.info(f"Polymarket overlay: {len(results)} signals "
+                        f"({', '.join(r['symbol'] + ' ' + r['action'] for r in results)})")
+        return results
+
     def get_latest_indicators(self, symbol: str, timeframe: str = '1h'):
         """Get latest indicators for a symbol/timeframe"""
         conn = sqlite3.connect(self.db_path)
@@ -411,10 +473,14 @@ class SignalTradingSystem:
                         signals.append(bt_signal)
                         logger.info(f"Backtested signal: {symbol} {bt_signal['action']} "
                                     f"strength={bt_signal['strength']:.1f}")
-                        continue  # backtested strategy fired — skip legacy for this symbol
-                # Backtested strategy was silent — fall back to legacy logic below
+                    else:
+                        logger.info(f"Routed strategy weak signal for {symbol}: "
+                                    f"{bt_signal['action']} strength={bt_signal['strength']:.1f} < 35 — skipping")
+                else:
+                    logger.info(f"Routed strategy silent for {symbol} — holding (no legacy fallback)")
+                continue  # routed symbol: strategy decides, never fall back to legacy
 
-            # Fall back to original signal logic for non-routed symbols
+            # Legacy signal logic — only for symbols NOT routed to a backtested strategy
             indicators = self.get_latest_indicators(symbol, timeframe)
             if not indicators:
                 logger.warning(f"No indicators for {symbol} {timeframe}")
@@ -450,6 +516,46 @@ class SignalTradingSystem:
                 # Filter by strength threshold
                 if enhanced['strength'] >= 35:
                     signals.append(enhanced)
+
+        # ── Polymarket overlay: boost or create signals from prediction markets ──
+        pm_signals = self._get_polymarket_signals()
+        if pm_signals:
+            # Build lookup of existing signals by (symbol, action)
+            existing = {}
+            for i, sig in enumerate(signals):
+                existing[(sig["symbol"], sig["action"])] = i
+
+            for pm in pm_signals:
+                key = (pm["symbol"], pm["action"])
+                if key in existing:
+                    # Agreement: boost the existing signal's strength
+                    idx = existing[key]
+                    boost = min(pm["strength"] * 0.25, 15)  # cap boost at +15
+                    old_str = signals[idx]["strength"]
+                    signals[idx]["strength"] = min(old_str + boost, 100)
+                    signals[idx]["reason"] += f" | PM boost +{boost:.0f} ({pm['reason']})"
+                    logger.info(f"Polymarket boost: {pm['symbol']} {pm['action']} "
+                                f"+{boost:.0f} ({old_str:.0f}→{signals[idx]['strength']:.0f})")
+                else:
+                    # New signal from Polymarket alone — cap at 65 (moderate conviction)
+                    pm["strength"] = min(pm["strength"], 65)
+                    # Log to strategy tracker
+                    if self.strategy_tracker:
+                        signal_id = self.strategy_tracker.log_signal(
+                            strategy_name="polymarket_overlay",
+                            symbol=pm["symbol"],
+                            timeframe="event",
+                            action=pm["action"],
+                            strength=pm["strength"],
+                            reason=pm["reason"],
+                            was_executed=False,
+                        )
+                        pm["_signal_id"] = signal_id
+                    if pm["strength"] >= 35:
+                        signals.append(pm)
+                        logger.info(f"Polymarket new signal: {pm['symbol']} {pm['action']} "
+                                    f"strength={pm['strength']:.0f}")
+
         return signals, risk_exit_signals, risk_report
 
     def check_trading_signals(self, symbol: str, indicators: dict) -> Dict[str, any]:
@@ -471,6 +577,17 @@ class SignalTradingSystem:
         volume_ratio = indicators.get('volume_ratio')
 
         if rsi is None or macd_hist is None:
+            return None
+
+        # Asset-class-aware RSI thresholds
+        _p = get_asset_class_profile(symbol) if get_asset_class_profile else {}
+        rsi_os = _p.get("rsi_oversold", 30)       # strong oversold
+        rsi_ob = _p.get("rsi_overbought", 70)     # strong overbought
+        rsi_wos = _p.get("rsi_weak_oversold", 35)  # weak oversold
+        rsi_wob = _p.get("rsi_weak_overbought", 65) # weak overbought
+
+        # Skip legacy RSI signals for binary-profile assets (prediction markets)
+        if _p.get("indicator_profile") == "binary":
             return None
 
         # Convert SMA values safely
@@ -496,28 +613,28 @@ class SignalTradingSystem:
 
         # ── 1. MEAN-REVERSION SIGNALS (original logic) ──────────────────
 
-        # Strong oversold BUY: RSI < 30 + MACD turning bullish
-        if rsi < 30 and macd_hist > 0:
+        # Strong oversold BUY: RSI < oversold + MACD turning bullish
+        if rsi < rsi_os and macd_hist > 0:
             signal['action'] = 'BUY'
-            signal['strength'] = (30 - rsi) * 3.33 + min(macd_hist * 100, 50)
+            signal['strength'] = (rsi_os - rsi) * 3.33 + min(macd_hist * 100, 50)
             signal['reason'] = f'Strong oversold reversal: RSI={rsi:.1f} MACD={macd_hist:.4f}'
 
-        # Strong overbought SELL: RSI > 70 + MACD turning bearish
-        elif rsi > 70 and macd_hist < 0:
+        # Strong overbought SELL: RSI > overbought + MACD turning bearish
+        elif rsi > rsi_ob and macd_hist < 0:
             signal['action'] = 'SELL'
-            signal['strength'] = (rsi - 70) * 3.33 + min(abs(macd_hist) * 100, 50)
+            signal['strength'] = (rsi - rsi_ob) * 3.33 + min(abs(macd_hist) * 100, 50)
             signal['reason'] = f'Strong overbought reversal: RSI={rsi:.1f} MACD={macd_hist:.4f}'
 
         # Weak oversold BUY
-        elif rsi < 35 and macd_hist > 0:
+        elif rsi < rsi_wos and macd_hist > 0:
             signal['action'] = 'BUY'
-            signal['strength'] = (35 - rsi) * 2.0 + min(macd_hist * 100, 30)
+            signal['strength'] = (rsi_wos - rsi) * 2.0 + min(macd_hist * 100, 30)
             signal['reason'] = f'Weak oversold: RSI={rsi:.1f} MACD={macd_hist:.4f}'
 
         # Weak overbought SELL
-        elif rsi > 65 and macd_hist < 0:
+        elif rsi > rsi_wob and macd_hist < 0:
             signal['action'] = 'SELL'
-            signal['strength'] = (rsi - 65) * 2.0 + min(abs(macd_hist) * 100, 30)
+            signal['strength'] = (rsi - rsi_wob) * 2.0 + min(abs(macd_hist) * 100, 30)
             signal['reason'] = f'Weak overbought: RSI={rsi:.1f} MACD={macd_hist:.4f}'
 
         # ── 2. TREND-FOLLOWING SIGNALS ───────────────────────────────────
@@ -861,15 +978,17 @@ class SignalTradingSystem:
                 else:
                     alloc_pct = 0.03 + (strength - 50) / 750
 
-                # Cap at MAX_POSITION_PCT from config
-                max_pct = 0.25
+                # Cap at per-asset-class position limit
+                _prof = get_asset_class_profile(symbol) if get_asset_class_profile else {}
+                max_pct = _prof.get("max_position_pct", 0.25)
                 alloc_pct = min(alloc_pct, max_pct)
 
                 buy_amount = portfolio_value * alloc_pct
                 buy_amount = min(buy_amount, self.portfolio.capital * 0.95)  # keep 5% cash reserve
 
-                if buy_amount < 10.0:
-                    logger.info(f"Buy amount ${buy_amount:.2f} too small for {symbol}")
+                min_trade = _prof.get("min_trade_usd", 10.0)
+                if buy_amount < min_trade:
+                    logger.info(f"Buy amount ${buy_amount:.2f} below min ${min_trade:.0f} for {symbol}")
                     continue
 
                 logger.info(f"Signal BUY {symbol}: strength={strength:.1f}, amount=${buy_amount:.2f}")
@@ -886,15 +1005,17 @@ class SignalTradingSystem:
                     logger.info(f"No position in {symbol} — skipping SELL signal")
                     continue
 
-                # Minimum holding period: 12 hours (prevents fee-destroying churn)
+                # Minimum holding period (asset-class-aware, prevents fee-destroying churn)
                 # Risk-driven exits (stop-loss, circuit breaker) bypass this
+                _sell_prof = get_asset_class_profile(symbol) if get_asset_class_profile else {}
+                min_hold = _sell_prof.get("min_hold_hours", 12)
                 entry_date_str = self.portfolio.entry_prices.get(f"{symbol}_date")
                 if entry_date_str and sig.get('_strategy_name', '') != 'risk_exit':
                     try:
                         entry_dt = datetime.fromisoformat(entry_date_str)
                         held_hours = (datetime.now() - entry_dt).total_seconds() / 3600
-                        if held_hours < 12:
-                            logger.info(f"Min hold: {symbol} held {held_hours:.1f}h < 12h — skipping SELL")
+                        if held_hours < min_hold:
+                            logger.info(f"Min hold: {symbol} held {held_hours:.1f}h < {min_hold}h — skipping SELL")
                             continue
                     except Exception:
                         pass

@@ -30,6 +30,10 @@ from config import (
     EQUITY_SECTORS,
     get_sector,
 )
+try:
+    from config import get_asset_class_profile
+except ImportError:
+    get_asset_class_profile = None
 from exit_signals import ExitSignal, CircuitBreaker, RiskViolation
 
 logger = logging.getLogger(__name__)
@@ -53,6 +57,29 @@ class RiskManager:
         self.circuit_breaker_event: Optional[CircuitBreaker] = None
 
         self._load_state()
+        self._profile_cache: Dict[str, dict] = {}
+
+    def _get_profile(self, symbol: str) -> dict:
+        """Resolve asset-class profile for a symbol (cached per instance)."""
+        if symbol in self._profile_cache:
+            return self._profile_cache[symbol]
+        if get_asset_class_profile:
+            try:
+                profile = get_asset_class_profile(symbol)
+                self._profile_cache[symbol] = profile
+                return profile
+            except Exception:
+                pass
+        # Fallback: module-level crypto defaults
+        self._profile_cache[symbol] = {
+            "stop_loss_pct": STOP_LOSS_PCT,
+            "trailing_stop_activation": TRAILING_STOP_ACTIVATION,
+            "trailing_stop_pct": TRAILING_STOP_PCT,
+            "take_profit_levels": TAKE_PROFIT_LEVELS,
+            "max_position_pct": MAX_POSITION_PCT,
+            "max_sector_pct": MAX_SECTOR_PCT,
+        }
+        return self._profile_cache[symbol]
 
     # ── State persistence ────────────────────────────────────────────────
 
@@ -153,14 +180,15 @@ class RiskManager:
             return None
 
         self.update_price(symbol, price)
-        stop_price = entry * (1.0 - STOP_LOSS_PCT)
+        sl_pct = self._get_profile(symbol).get("stop_loss_pct", STOP_LOSS_PCT)
+        stop_price = entry * (1.0 - sl_pct)
 
         if price <= stop_price:
             return ExitSignal(
                 symbol=symbol,
                 exit_type="stop_loss",
                 quantity_pct=1.0,
-                reason=f"Price ${price:.4f} hit stop-loss at ${stop_price:.4f} ({STOP_LOSS_PCT:.0%} below entry ${entry:.4f})",
+                reason=f"Price ${price:.4f} hit stop-loss at ${stop_price:.4f} ({sl_pct:.0%} below entry ${entry:.4f})",
                 current_price=price,
                 trigger_price=stop_price,
                 urgency="high",
@@ -181,7 +209,10 @@ class RiskManager:
         gain_pct = (price - entry) / entry
 
         # Only activate trailing stop after sufficient gain
-        if gain_pct < TRAILING_STOP_ACTIVATION:
+        profile = self._get_profile(symbol)
+        ts_activation = profile.get("trailing_stop_activation", TRAILING_STOP_ACTIVATION)
+        ts_pct = profile.get("trailing_stop_pct", TRAILING_STOP_PCT)
+        if gain_pct < ts_activation:
             return None
 
         peak = self.high_watermarks.get(symbol, price)
@@ -191,7 +222,7 @@ class RiskManager:
         if atr and atr > 0:
             trail_price = peak - (2.0 * atr)  # 2x ATR trailing
         else:
-            trail_price = peak * (1.0 - TRAILING_STOP_PCT)
+            trail_price = peak * (1.0 - ts_pct)
 
         # Trailing stop must be above entry (breakeven floor)
         trail_price = max(trail_price, entry * 1.001)
@@ -221,7 +252,8 @@ class RiskManager:
         gain_pct = (price - entry) / entry
         already_hit = self.partial_exits.get(symbol, [])
 
-        for i, (threshold, sell_pct) in enumerate(TAKE_PROFIT_LEVELS):
+        tp_levels = self._get_profile(symbol).get("take_profit_levels", TAKE_PROFIT_LEVELS)
+        for i, (threshold, sell_pct) in enumerate(tp_levels):
             if i in already_hit:
                 continue
             if gain_pct >= threshold:
@@ -277,12 +309,13 @@ class RiskManager:
 
         for symbol, pos_value in positions.items():
             pct = pos_value / portfolio_value
-            if pct > MAX_POSITION_PCT:
+            max_pct = self._get_profile(symbol).get("max_position_pct", MAX_POSITION_PCT)
+            if pct > max_pct:
                 violations.append(RiskViolation(
                     violation_type="position_concentration",
-                    detail=f"{symbol} is {pct:.1%} of portfolio (limit {MAX_POSITION_PCT:.0%})",
+                    detail=f"{symbol} is {pct:.1%} of portfolio (limit {max_pct:.0%})",
                     current_value=pct,
-                    limit_value=MAX_POSITION_PCT,
+                    limit_value=max_pct,
                 ))
         return violations
 

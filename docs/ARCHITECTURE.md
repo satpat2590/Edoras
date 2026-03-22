@@ -33,6 +33,45 @@ strategy_registry, portfolios                         ▼
                                              OpenClaw CLI → Telegram
 ```
 
+## Cross-Asset Portfolio Support
+
+Portfolios are **strategy repositories**, not asset-class silos. A single portfolio
+can hold crypto, prediction markets, equities, and indices simultaneously. The
+execution layer resolves per-asset-class parameters dynamically.
+
+### Asset-Class Profile System (`config.py`)
+
+`ASSET_CLASS_PROFILES` defines per-class defaults for: fee %, stop-loss, trailing
+stop, take-profit levels, position cap, sector cap, min trade size, min hold period,
+RSI thresholds, indicator profile, and decimal precision.
+
+`get_asset_class_profile(symbol)` resolves a symbol's profile:
+1. Queries `securities.asset_class` from the DB
+2. Falls back to `get_asset_type()` heuristic
+3. Returns the matching profile (default: crypto)
+
+### Where Profiles Are Used
+
+| Module | What It Resolves |
+|--------|-----------------|
+| `paper_trading.py` | Fee % per trade (`execute_buy`, `execute_sell`) |
+| `risk_manager.py` | Stop-loss %, trailing stop %, take-profit levels, position cap per symbol |
+| `signal_trading.py` | RSI thresholds, min trade amount, min hold period, max position % |
+| `indicator_calculator.py` | Indicator set (`standard` vs `binary`) — dispatched by WebSocket and batch jobs |
+
+### Supported Asset Classes
+
+| Class | Fee | Indicator Profile | Examples |
+|-------|-----|-------------------|----------|
+| `crypto` | 0.1% | standard (RSI, MACD, BB, ADX) | BTC-USD, ETH-USD, DOGE-USD |
+| `equity` | 0% | standard | AAPL, MSFT, SPY |
+| `prediction` | 2% | binary (prob_ema, certainty, prob_roc) | PM:BITCOIN-REACH-150K, PM:FED-RATE |
+| `index` | 0% | standard | SPY, QQQ, ^GSPC |
+
+Prediction market symbols with `indicator_profile=binary` are skipped by the legacy
+RSI/MACD signal generator (they require binary-specific strategies or the Polymarket
+overlay pipeline).
+
 ## Module Reference
 
 ### Infrastructure
@@ -206,7 +245,7 @@ This ensures jobs catch up after laptop suspend/resume — cron silently skips t
 | Timer | Schedule (EDT) | Service | Purpose |
 |-------|----------------|---------|---------|
 | `crypto-daily-analysis` | 8:30 AM daily | `run_daily_analysis.sh` | Crypto OHLCV + indicators |
-| `crypto-intraday-update` | Every 4h, 7AM-11PM | `intraday_update.py` | Crypto REST gap-fill |
+| `crypto-intraday-update` | Every 2h | `intraday_update.py` | Crypto 1h REST gap-fill + 1h→4h aggregation + 4h indicators |
 | `polymarket-ingest` | Every 4h | `providers/polymarket.py` | PM market discovery + REST gap-fill |
 | `equity-daily-update` | 5:00 AM daily | `equity_data_collector.py --update` | Equity + index daily data |
 | `equity-full-collect` | Sunday 3 AM | `equity_data_collector.py --collect` | Weekly full equity history |
@@ -218,7 +257,7 @@ This ensures jobs catch up after laptop suspend/resume — cron silently skips t
 |-------|----------------|---------|---------|
 | `correlation-snapshot` | 8:00 AM daily | `correlation_tracker.py --snapshot` | Cross-asset correlations + regime |
 | `crypto-signal-alerts` | 8AM / 12PM / 4PM | `run_signal_alerts.sh` | Signal detection with risk checks |
-| `crypto-signal-trading` | 8:05AM / 12:05PM / 4:05PM / 8:05PM | `signal_trading.py --check` | Multi-portfolio strategy signals |
+| `crypto-signal-trading` | Every 4h, 24/7 (00:05/04:05/08:05/12:05/16:05/20:05 UTC) | `signal_trading.py --check` | Multi-portfolio strategy signals |
 | `crypto-price-alerts` | Every 30min, 7AM-11PM | `price_alerts_cron.sh` | Price threshold alerts |
 
 #### Reporting (depends on analysis)

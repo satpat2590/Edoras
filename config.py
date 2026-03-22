@@ -44,7 +44,7 @@ EQUITY_SYMBOLS = [
 INDEX_SYMBOLS = ["SPY", "QQQ", "^VIX"]
 
 # ── Timeframes ───────────────────────────────────────────────────────────
-TIMEFRAMES = {"1h": "ONE_HOUR", "4h": "SIX_HOUR", "1d": "ONE_DAY"}
+TIMEFRAMES = {"1h": "ONE_HOUR", "1d": "ONE_DAY"}  # 4h is aggregated from 1h (see crypto_data_collector.aggregate_4h_candles)
 
 TIMEFRAME_WEIGHTS_CRYPTO = {"1d": 0.40, "4h": 0.35, "1h": 0.25}
 TIMEFRAME_WEIGHTS_EQUITY = {"1d": 0.50, "4h": 0.35, "1h": 0.15}
@@ -84,6 +84,100 @@ TAKE_PROFIT_LEVELS = [
 MAX_PORTFOLIO_DRAWDOWN = 0.15  # 15 % circuit breaker
 MAX_POSITION_PCT = 0.25        # 25 % of portfolio per position
 MAX_SECTOR_PCT = 0.40          # 40 % per sector
+
+# ── Asset-class profiles ───────────────────────────────────────────────
+# Per-asset-class parameter sets.  All downstream modules (risk, execution,
+# signal generation) resolve thresholds from here rather than using the
+# module-level constants above (which are kept as crypto defaults/fallbacks).
+ASSET_CLASS_PROFILES = {
+    "crypto": {
+        "fee_pct": 0.001,
+        "stop_loss_pct": STOP_LOSS_PCT,
+        "trailing_stop_activation": TRAILING_STOP_ACTIVATION,
+        "trailing_stop_pct": TRAILING_STOP_PCT,
+        "take_profit_levels": TAKE_PROFIT_LEVELS,
+        "max_position_pct": MAX_POSITION_PCT,
+        "max_sector_pct": MAX_SECTOR_PCT,
+        "min_trade_usd": 10.0,
+        "min_hold_hours": 12,
+        "rsi_oversold": CRYPTO_RSI_OVERSOLD,
+        "rsi_overbought": CRYPTO_RSI_OVERBOUGHT,
+        "rsi_weak_oversold": CRYPTO_RSI_WEAK_OVERSOLD,
+        "rsi_weak_overbought": CRYPTO_RSI_WEAK_OVERBOUGHT,
+        "indicator_profile": "standard",
+        "position_precision": 8,
+    },
+    "equity": {
+        "fee_pct": 0.0,
+        "stop_loss_pct": 0.07,
+        "trailing_stop_activation": 0.05,
+        "trailing_stop_pct": 0.04,
+        "take_profit_levels": [(0.10, 0.33), (0.15, 0.33), (0.20, 1.00)],
+        "max_position_pct": 0.15,
+        "max_sector_pct": 0.35,
+        "min_trade_usd": 25.0,
+        "min_hold_hours": 24,
+        "rsi_oversold": EQUITY_RSI_OVERSOLD,
+        "rsi_overbought": EQUITY_RSI_OVERBOUGHT,
+        "rsi_weak_oversold": EQUITY_RSI_WEAK_OVERSOLD,
+        "rsi_weak_overbought": EQUITY_RSI_WEAK_OVERBOUGHT,
+        "indicator_profile": "standard",
+        "position_precision": 4,
+    },
+    "prediction": {
+        "fee_pct": 0.02,
+        "stop_loss_pct": 0.15,
+        "trailing_stop_activation": 0.10,
+        "trailing_stop_pct": 0.08,
+        "take_profit_levels": [(0.30, 0.50), (0.50, 1.00)],
+        "max_position_pct": 0.10,
+        "max_sector_pct": 0.25,
+        "min_trade_usd": 5.0,
+        "min_hold_hours": 1,
+        "rsi_oversold": None,
+        "rsi_overbought": None,
+        "rsi_weak_oversold": None,
+        "rsi_weak_overbought": None,
+        "indicator_profile": "binary",
+        "position_precision": 2,
+    },
+    "index": {
+        "fee_pct": 0.0,
+        "stop_loss_pct": 0.05,
+        "trailing_stop_activation": 0.03,
+        "trailing_stop_pct": 0.03,
+        "take_profit_levels": [(0.08, 0.33), (0.12, 0.50), (0.18, 1.00)],
+        "max_position_pct": 0.20,
+        "max_sector_pct": 0.50,
+        "min_trade_usd": 50.0,
+        "min_hold_hours": 24,
+        "rsi_oversold": EQUITY_RSI_OVERSOLD,
+        "rsi_overbought": EQUITY_RSI_OVERBOUGHT,
+        "rsi_weak_oversold": EQUITY_RSI_WEAK_OVERSOLD,
+        "rsi_weak_overbought": EQUITY_RSI_WEAK_OVERBOUGHT,
+        "indicator_profile": "standard",
+        "position_precision": 4,
+    },
+}
+
+# In-memory cache: symbol -> profile dict
+_asset_profile_cache: Dict[str, dict] = {}
+
+
+def get_asset_class_profile(symbol: str) -> dict:
+    """Resolve the full parameter profile for a symbol's asset class.
+
+    Queries securities.asset_class, falls back to get_asset_type() heuristic,
+    then returns the matching profile. Defaults to 'crypto' if nothing matches.
+    Result is cached per symbol for the process lifetime.
+    """
+    if symbol in _asset_profile_cache:
+        return _asset_profile_cache[symbol]
+    asset_class = get_asset_type(symbol)
+    profile = ASSET_CLASS_PROFILES.get(asset_class, ASSET_CLASS_PROFILES["crypto"]).copy()
+    _asset_profile_cache[symbol] = profile
+    return profile
+
 
 # ── Portfolios ──────────────────────────────────────────────────────────
 # Portfolio IDs (DB primary keys — stable across code)

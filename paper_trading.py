@@ -18,10 +18,11 @@ import logging
 logger = logging.getLogger(__name__)
 
 try:
-    from config import ACTIVE_PORTFOLIO_ID, resolve_account_id
+    from config import ACTIVE_PORTFOLIO_ID, resolve_account_id, get_asset_class_profile
 except ImportError:
     ACTIVE_PORTFOLIO_ID = 1
     resolve_account_id = None
+    get_asset_class_profile = None
 
 # Lazy-loaded trade journal (avoid circular imports)
 _trade_journal = None
@@ -52,7 +53,7 @@ class PaperTradingPortfolio:
         self.capital = initial_capital
         self.positions = {}  # symbol -> {'quantity': float, 'avg_price': float}
         self.entry_prices = {}  # symbol -> original entry price (for risk manager)
-        self.transaction_cost = 0.001  # 0.1%
+        self.transaction_cost = 0.001  # 0.1% default (overridden per-trade by asset class profile)
         self.trade_history = []
         self.portfolio_value_history = []
 
@@ -309,9 +310,15 @@ class PaperTradingPortfolio:
         
         # Calculate quantity
         quantity = amount_usd / price
-        
-        # Apply transaction cost
-        cost = amount_usd * self.transaction_cost
+
+        # Apply transaction cost (asset-class-aware)
+        fee_pct = self.transaction_cost
+        if get_asset_class_profile:
+            try:
+                fee_pct = get_asset_class_profile(symbol).get("fee_pct", fee_pct)
+            except Exception:
+                pass
+        cost = amount_usd * fee_pct
         total_cost = amount_usd + cost
         
         if total_cost > self.capital:
@@ -380,9 +387,15 @@ class PaperTradingPortfolio:
             logger.warning(f"Cannot sell {symbol} - price is ${price}")
             return False
         
-        # Calculate proceeds
+        # Calculate proceeds (asset-class-aware fee)
         proceeds = quantity * price
-        cost = proceeds * self.transaction_cost
+        fee_pct = self.transaction_cost
+        if get_asset_class_profile:
+            try:
+                fee_pct = get_asset_class_profile(symbol).get("fee_pct", fee_pct)
+            except Exception:
+                pass
+        cost = proceeds * fee_pct
         net_proceeds = proceeds - cost
         
         # Update capital

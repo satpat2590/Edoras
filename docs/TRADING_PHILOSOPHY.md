@@ -131,31 +131,50 @@ Hard cap: 25% of portfolio (MAX_POSITION_PCT). Cash reserve: 5%.
 
 ## 5. Risk Management
 
-### Position-Level
+Risk thresholds are resolved **per asset class** via `config.ASSET_CLASS_PROFILES`.
+Each symbol's asset class is looked up from the `securities` table. The tables below
+show the defaults; the crypto column matches the legacy hardcoded values.
 
-| Rule | Threshold | Action |
-|------|-----------|--------|
-| Stop-loss | −10% from entry | Sell 100% |
-| Trailing stop activation | +5% from entry | Begin trailing |
-| Trailing stop distance | 2 × ATR (or 5% fallback) | Sell 100% |
-| Trailing stop floor | Entry × 1.001 | Never trail below breakeven |
-| Take-profit tier 1 | +15% | Sell 33% |
-| Take-profit tier 2 | +20% | Sell 33% |
-| Take-profit tier 3 | +25% | Sell remaining |
+### Position-Level (per asset class)
+
+| Rule | Crypto | Equity | Prediction | Index |
+|------|--------|--------|------------|-------|
+| Stop-loss | −10% | −7% | −15% | −5% |
+| Trailing stop activation | +5% | +5% | +10% | +3% |
+| Trailing stop distance | 2×ATR / 5% | 2×ATR / 4% | 2×ATR / 8% | 2×ATR / 3% |
+| TP tier 1 | +15% → sell 33% | +10% → sell 33% | +30% → sell 50% | +8% → sell 33% |
+| TP tier 2 | +20% → sell 33% | +15% → sell 33% | +50% → sell 100% | +12% → sell 50% |
+| TP tier 3 | +25% → sell rest | +20% → sell rest | — | +18% → sell rest |
+| Fee per trade | 0.1% | 0% | 2% | 0% |
 
 ### Portfolio-Level
 
-| Rule | Threshold | Action |
-|------|-----------|--------|
-| Circuit breaker | −15% drawdown from peak | Liquidate all positions, suppress all BUY signals |
-| Position concentration | > 25% of portfolio in one symbol | Block further buys |
-| Sector concentration | > 40% of portfolio in one sector | Block further buys |
+| Rule | Crypto | Equity | Prediction | Index |
+|------|--------|--------|------------|-------|
+| Circuit breaker | −15% drawdown | −15% drawdown | −15% drawdown | −15% drawdown |
+| Max position pct | 25% | 15% | 10% | 20% |
+| Max sector pct | 40% | 35% | 25% | 50% |
 
-### Minimum Hold Period
+### Minimum Hold Period (per asset class)
 
-Default 12 hours. Prevents fee-destroying churn. Exceptions:
+| Asset Class | Min Hold | Rationale |
+|-------------|----------|-----------|
+| Crypto | 12h | Prevent fee-destroying churn on 4h timeframe |
+| Equity | 24h | T+1 settlement, lower intraday vol |
+| Prediction | 1h | Event-driven, fast turnover |
+| Index | 24h | T+1 settlement |
+
+Exceptions:
 - **Risk-driven exits** (stop-loss, trailing stop, circuit breaker) always bypass.
-- **Day-trading opportunities**: The LLM agent may request a shorter hold (down to 6h) when justified by high-conviction short-term setups. Must include explicit reasoning in `decision_context`.
+- **Day-trading opportunities**: The LLM agent may request a shorter hold when justified by high-conviction short-term setups. Must include explicit reasoning in `decision_context`.
+
+### Profile Resolution
+
+All modules call `config.get_asset_class_profile(symbol)` which:
+1. Queries `securities.asset_class` from the DB
+2. Falls back to `get_asset_type()` heuristic (symbol pattern matching)
+3. Returns the profile dict from `ASSET_CLASS_PROFILES`
+4. Caches per symbol for the process lifetime
 
 ---
 
