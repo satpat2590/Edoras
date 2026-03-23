@@ -309,7 +309,10 @@ class SignalTradingSystem:
             return None
 
         strategy, timeframe = self.strategy_routes[symbol]
-        df = self.get_indicator_window(symbol, timeframe, lookback=60)
+        # Fetch enough bars for the strategy's lookback requirement.
+        # TSMOM_3M needs 64, TSMOM needs 253, most others need ~30.
+        # 120 covers all 4h strategies with margin; data is cheap.
+        df = self.get_indicator_window(symbol, timeframe, lookback=120)
         if df is None:
             logger.warning(f"Insufficient data for backtested strategy on {symbol}/{timeframe}")
             return None
