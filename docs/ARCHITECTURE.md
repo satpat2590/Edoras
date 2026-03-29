@@ -1,5 +1,7 @@
 # Trading System Architecture
 
+Last updated: 2026-03-29 | Verified against code: 2026-03-29
+
 ## Overview
 
 Multi-asset, multi-exchange trading analysis and execution system. Covers crypto (Coinbase), prediction markets (Polymarket), equities (yfinance), and cross-asset correlation tracking with VIX-based regime detection. Delivers alerts and reports via OpenClaw → Telegram.
@@ -187,169 +189,15 @@ SPY (S&P 500), QQQ (NASDAQ-100), ^VIX
 
 ## Database Schema
 
-All data lives in `crypto_data.db` (SQLite):
+See [docs/DATABASE.md](DATABASE.md) for full schema reference, table classifications, and key queries.
 
-### Core Data Tables
-- `candlesticks` — OHLCV for all asset types (crypto, equity, index, prediction markets)
-- `indicators` — 17 standard + 16 binary indicator columns per symbol/timeframe
-- `portfolio_analysis` — signal classifications and recommendations
-- `collection_log` — data fetch tracking
-- `sentiment_scores` — LLM-analyzed news sentiment
-- `correlations` — daily cross-asset correlation snapshots
-- `market_regime` — VIX level, regime label, BTC-equity correlations
+All data lives in `crypto_data.db` (SQLite). Key table groups: Core Market Data (candlesticks, indicators), Trading (trades, positions, trade_outcomes), Strategy (strategy_registry, strategy_catalogue, strategy_signals_log), Portfolio (portfolios, accounts, paper_snapshots), Dimension (exchanges, securities, traders), Intelligence (market_regime, sentiment_scores, correlations), DEX (dex_tokens, dex_transactions).
 
-### Trading Tables
-- `trades` — all trade records with portfolio_id, account_id (→ accounts), strategy_id (→ strategy_registry), trader_id (→ traders), decision_context JSON, DEX columns (tx_hash, block_number, gas_used, gas_price_gwei, slippage_bps)
-- `positions` — current open/closed positions with account_id FK, synced on every trade
-- `trade_outcomes` — closed trade journal entries with portfolio_id
-- `paper_snapshots` — daily portfolio snapshots, UNIQUE(date, portfolio_id)
-- `portfolio_valuations` — portfolio NAV time series: total_nav_usd, cost_basis, unrealized/realized PnL, fees
-- `transfers` — capital movements between accounts: deposits, withdrawals, bridges
-- `strategy_performance` — 166 backtest results + rolling paper/live snapshots
-- `strategy_signals_log` — every signal generated, with execution and outcome tracking
+## Scheduling
 
-### Dimension Tables
-- `exchanges` (venues) — 5 venues (coinbase, yfinance, polymarket, kalshi, bankr) with fee_model, settlement_type, chain/chain_id for DEX
-- `securities` — instrument catalog (52+ rows) with canonical_instrument_id (cross-venue asset grouping), decimals (on-chain tokens), chain, contract_address, is_dex
-- `accounts` — bridge table: portfolio ↔ venue (4 rows). Each account has account_type (paper, api_key, wallet) and account_external_id
-- `strategy_registry` — 7 strategies with strategy_type (momentum, mean_reversion, etc.) and parameters JSON
-- `portfolio_strategies` — M:M junction: which strategies assigned to which portfolios
-- `portfolios` — 4 portfolios (Galadriel/paper, Thranduil/live, Elrond/tracked, Arwen/DEX-live)
-- `traders` — 5 traders (Aleph, Regi agents + Signal Engine, Risk Engine systems + Satyam human)
-- `trader_portfolio_access` — M:M: which traders can trade which portfolios
+See [docs/OPERATIONS.md](OPERATIONS.md) for full timer schedule, daily trading timeline, and troubleshooting.
 
-## Scheduling (systemd user timers)
-
-All jobs run as systemd user timers (`~/.config/systemd/user/`) with `Persistent=true`.
-This ensures jobs catch up after laptop suspend/resume — cron silently skips them.
-
-### Why systemd over cron
-
-- `Persistent=true` runs missed jobs immediately on wake
-- `journalctl --user -u <service>` for logs (no manual log rotation)
-- Proper dependencies: `After=network.target`
-- Timeout protection: `TimeoutSec=` kills hung jobs
-- All timers visible: `systemctl --user list-timers`
-
-### Complete schedule
-
-#### Persistent Services (24/7)
-
-| Service | Purpose |
-|---------|---------|
-| `coinbase-websocket.service` | Multi-feed supervisor: Coinbase WS (18 crypto) + Polymarket WS (20+ markets) |
-| `openclaw-gateway-watchdog.timer` | Gateway health probe (every 60s) |
-
-#### Data Collection (feeds everything downstream)
-
-| Timer | Schedule (EDT) | Service | Purpose |
-|-------|----------------|---------|---------|
-| `crypto-daily-analysis` | 8:30 AM daily | `run_daily_analysis.sh` | Crypto OHLCV + indicators |
-| `crypto-intraday-update` | Every 2h | `intraday_update.py` | Crypto 1h REST gap-fill + 1h→4h aggregation + 4h indicators |
-| `polymarket-ingest` | Every 4h | `providers/polymarket.py` | PM market discovery + REST gap-fill |
-| `equity-daily-update` | 5:00 AM daily | `equity_data_collector.py --update` | Equity + index daily data |
-| `equity-full-collect` | Sunday 3 AM | `equity_data_collector.py --collect` | Weekly full equity history |
-| `crypto-weekly-backfill` | Sunday 2 AM | `historical_backfill.py --days 14` | Weekly crypto gap-fill |
-
-#### Analysis & Signals (depends on fresh data)
-
-| Timer | Schedule (EDT) | Service | Purpose |
-|-------|----------------|---------|---------|
-| `correlation-snapshot` | 8:00 AM daily | `correlation_tracker.py --snapshot` | Cross-asset correlations + regime |
-| `crypto-signal-alerts` | 8AM / 12PM / 4PM | `run_signal_alerts.sh` | Signal detection with risk checks |
-| `crypto-signal-trading` | Every 4h, 24/7 (00:05/04:05/08:05/12:05/16:05/20:05 UTC) | `signal_trading.py --check` | Multi-portfolio strategy signals |
-| `crypto-price-alerts` | Every 30min, 7AM-11PM | `price_alerts_cron.sh` | Price threshold alerts |
-
-#### Reporting (depends on analysis)
-
-| Timer | Schedule (EDT) | Service | Purpose |
-|-------|----------------|---------|---------|
-| `crypto-portfolio-snapshot` | 9:00 AM daily | `daily_report_cron.sh` | Portfolio snapshot → Telegram |
-| `paper-portfolio-report` | 5:00 PM daily | `run_paper_report.sh` | Paper portfolio report |
-| `paper-portfolio-rebalancing` | Monday 9 AM | `run_paper_rebalancing.sh` | Weekly paper rebalancing |
-| `news-digest` | 8 AM & 4 PM | `news_digest_cron.sh` | World news digests |
-| `company-financials` | 7:30 AM daily | `company_financials.py --collect` | Fundamental data refresh |
-
-#### Infrastructure
-
-| Timer | Schedule | Service | Purpose |
-|-------|----------|---------|---------|
-| `crypto-random-scheduler` | 3:00 AM daily | `schedule_daily.sh` | Random intraday report scheduling |
-
-### Aleph's trading day (EDT)
-
-```
-1:00 AM  gateway-weekly-restart (Sun) ──── preemptive memory relief
-2:00 AM  crypto-weekly-backfill (Sun) ──── fill gaps in crypto OHLCV
-3:00 AM  equity-full-collect (Sun) ──────── full equity re-fetch
-         crypto-random-scheduler ────────── schedule random reports
-5:00 AM  equity-daily-update ────────────── equity + VIX + SPY + QQQ
-
-═══ ACTIVE TRADING HOURS (7 AM - 11 PM) ═══════════════════════
-
-7:00 AM  ┌── risk-guardian starts (every 30 min) ──────────┐
-         │   Pure rules: stops, trailing, TP, circuit       │
-         │   breaker. Executes exits immediately.           │
-         │   No LLM. Logs to risk_events.jsonl.             │
-7:30 AM  │  company-financials                              │
-8:00 AM  │  correlation-snapshot ── BTC-SPY/QQQ, VIX regime │
-         │  signal-alerts + signal-trading                   │
-         │  news-digest (morning)                            │
-8:30 AM  │  crypto-daily-analysis ── OHLCV + indicators      │
-8:45 AM  │  MORNING STRATEGIC REVIEW (full LLM, GPT-4o)     │
-         │    All context: regime, scores, signals, sentiment │
-         │    correlations, risk events, vector memory        │
-         │    → Strategic trades, rebalancing, full report    │
-9:00 AM  │  portfolio-snapshot → Telegram                    │
-         │  paper-rebalancing (Mon)                          │
-         │                                                   │
-12:00 PM │  signal-alerts + signal-trading                   │
-12:30 PM │  MIDDAY TACTICAL CHECK (light LLM, GPT-4o-mini)  │
-         │    Strong signals only (strength >= 70)            │
-         │    High-conviction trades only                     │
-         │                                                   │
-4:00 PM  │  signal-alerts + signal-trading                   │
-4:30 PM  │  AFTERNOON TACTICAL CHECK (light LLM)            │
-         │  news-digest (afternoon)                          │
-5:00 PM  │  paper-portfolio-report                           │
-         │                                                   │
-11:00 PM └── risk-guardian stops ────────────────────────────┘
-
-CONTINUOUS:
-  Every 30m  risk-guardian (7AM-11PM) ──── position risk checks + auto-exits
-  Every 30m  crypto-price-alerts ────────── threshold alerts
-  Every 4h   crypto-intraday-update ─────── intraday candles + indicators
-  Every 60s  openclaw-gateway-watchdog ──── gateway health + outage logging
-```
-
-### Trading decision hierarchy
-
-```
-DEFENSIVE (no LLM, every 30 min, 7 AM - 11 PM)
-│  risk_guardian.py
-│  → Stop-loss, trailing stop, take-profit, circuit breaker
-│  → Executes exits immediately in paper portfolio
-│  → Sends Telegram alert
-│  → Logs to risk_events.jsonl + market intelligence vector store
-│
-STRATEGIC (full LLM, 8:45 AM daily)
-│  trading_agent.py --run
-│  → Full context: regime, scores, signals, sentiment,
-│    correlations, risk events, historical vector memory
-│  → GPT-4o analysis with structured prompt
-│  → Medium + high conviction trades
-│  → Smart rebalancing if recommended (drift-based)
-│  → Stores snapshot + rationales in vector memory
-│  → Full Telegram report
-│
-TACTICAL (light LLM, 12:30 PM + 4:30 PM)
-│  trading_agent.py --midday
-│  → Only strong signals (strength >= 70)
-│  → GPT-4o-mini for speed
-│  → High conviction trades only
-│  → Telegram report only if trades executed
-│  → Light memory storage
-```
+Key timers: `crypto-signal-trading` (every 4h), `crypto-intraday-update` (every 2h), `risk-guardian` (every 30m, 7AM-11PM), `trading-agent` (daily 8:45AM), `coinbase-websocket` (24/7 persistent).
 
 ## Setup & Operations
 

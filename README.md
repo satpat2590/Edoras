@@ -1,126 +1,161 @@
 # Edoras
 
-A modular, strategy-routed multi-asset trading system with regime-adaptive portfolio management.
-
-**Paper trading first. Live execution when you're ready.**
-
-## What It Does
-
-- **13 backtested strategies** — score-based, MACD, ADX trend, Bollinger reversion, TSMOM (momentum), pairs trading, regime-aware (HMM + heuristic)
-- **Regime detection** — classifies each symbol as bull/bear/sideways using ADX, SMA slope, MACD, RSI, and volatility scoring. Automatically swaps strategies when regime changes.
-- **Strategy catalogue** — persistent record of all backtest results. Rank strategies by any metric, filter winners, build portfolio templates with Sharpe-weighted allocations.
-- **Risk management** — stop-loss, trailing stops (ATR-based), take-profit scale-out, circuit breaker, position/sector limits, VIX regime filter
-- **Multi-portfolio** — isolated portfolios with per-symbol strategy routing, independent state, and full trade audit trail
-- **Multi-asset** — crypto (CEX via Coinbase), DEX (via Bankr API on Base/Ethereum), equities (via yfinance), prediction markets (Polymarket)
-- **Real-time data** — WebSocket streaming (Coinbase, Polymarket) with 5m candle aggregation, hourly rollups, and 1h→4h candle aggregation at UTC boundaries (Coinbase has no native 4h granularity)
-- **PDF reports** — dark-themed backtest reports, equity curves, monthly return heatmaps, strategy comparison charts
-- **Systemd scheduling** — all jobs survive laptop suspend/resume with `Persistent=true`
-
-## Quick Start
-
-```bash
-# Clone
-git clone https://github.com/satpat2590/Edoras.git
-cd Edoras
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Configure environment
-cp .env.example ~/.config/edoras.env
-# Edit ~/.config/edoras.env with your API keys
-source ~/.config/edoras.env
-
-# Initialize database
-python3 bootstrap_db.py
-python3 migration/phase1_warehouse_redesign.py
-
-# Backfill historical data (1100+ days for statistical significance)
-python3 historical_backfill.py
-
-# Run backtests
-python3 -c "from backtest import compare_strategies; compare_strategies(['BTC-USD', 'ETH-USD'])"
-
-# Start paper trading
-python3 signal_trading.py --portfolio Galadriel
-```
+Multi-asset, multi-exchange trading system with regime-adaptive strategy routing. Covers crypto (Coinbase CEX + Base DEX), prediction markets (Polymarket), equities (yfinance), and cross-asset correlation tracking with VIX-based regime detection. Paper trading first — live execution when ready.
 
 ## Architecture
 
 ```
-edoras/
-├── config.py                  # Central config (symbols, thresholds, risk params)
-├── signal_trading.py          # Strategy-routed signal pipeline + regime monitor
-├── paper_trading.py           # Paper portfolio execution with audit trail
-├── risk_manager.py            # Stop-loss, trailing stop, take-profit, circuit breaker
-├── indicator_calculator.py    # 17 standard + 16 binary indicators
-├── regime_monitor.py          # Bull/bear/sideways detection + strategy swapping
-├── backtest/
-│   ├── engine.py              # Core backtester with walk-forward support
-│   ├── metrics.py             # 23 performance metrics
-│   ├── strategies/            # 13 registered strategies (@register_strategy)
-│   ├── compare.py             # Multi-strategy x multi-symbol comparison
-│   ├── report.py              # PDF report generation
-│   ├── catalogue.py           # Persistent strategy catalogue + portfolio templates
-│   └── deployer.py            # Catalogue → warehouse → live route bridge
-├── realtime/
-│   ├── ingest/                # WebSocket clients (Coinbase, Polymarket)
-│   ├── supervisor.py          # Multi-feed supervisor with auto-restart
-│   └── risk/                  # Real-time risk monitoring
-├── migration/                 # Database schema migrations
-├── docs/                      # Architecture docs, trading philosophy
-└── tests/                     # Integration and unit tests
+REAL-TIME FEEDS                    ANALYSIS                      EXECUTION
+─────────────                      ────────                      ─────────
+Coinbase WS (18 crypto)  ─┐
+                           ├─ 1h → 4h rollup ─→ indicators ─→ signal_trading.py
+Polymarket WS (20+ mkts) ─┤                                   ├── strategy routing (13 strategies)
+                           │                                   ├── regime_monitor.py (HMM/heuristic)
+REST gap-fill (2h cycle)  ─┘                                   ├── risk_manager.py (stops, CB)
+                                                               └── paper_trading.py → trades DB
+yfinance (daily)  ─→ equity_data_collector.py                         │
+RSS feeds ────────→ sentiment.py                                      v
+                                                               OpenClaw → Telegram
 ```
+
+## Quick Start
+
+```bash
+cd ~/.openclaw/workspace/projects/edoras
+
+# Initialize database + backfill history
+python3 scripts/bootstrap_db.py
+python3 historical_backfill.py --days 400
+
+# Run signal trading (dry run)
+set -a && source ~/.config/coinbase.env && set +a
+python3 signal_trading.py --test
+
+# Check portfolio
+python3 cli.py snapshot
+```
+
+## Key Commands
+
+```bash
+python3 cli.py snapshot              # Positions, P&L, cash
+python3 cli.py trades --hours 24 -v  # Recent trades with reasoning
+python3 cli.py signals --hours 24    # Signals: executed vs skipped
+python3 cli.py health                # Data freshness, timer status
+python3 cli.py signal-trace          # Trace signal flow through gates
+python3 regime_monitor.py --detect   # Current regime per symbol
+python3 report_engine.py all         # Generate 7 PDF reports
+python3 cli.py dex balance           # DEX wallet balance (Arwen)
+```
+
+## Project Structure
+
+```
+edoras/
+├── config.py                    # Central config: symbols, thresholds, asset-class profiles
+├── indicator_calculator.py      # 17 standard + 16 binary indicators
+├── signal_trading.py            # Signal generation + execution orchestrator
+├── regime_monitor.py            # HMM/heuristic regime detection + strategy swap
+├── paper_trading.py             # Paper portfolio manager (positions, trades, P&L)
+├── risk_manager.py              # Stop-loss, trailing stop, take-profit
+├── risk_guardian.py             # Portfolio-level drawdown + circuit breaker
+├── trading_agent.py             # LLM-driven trading sessions
+├── live_executor.py             # Coinbase live execution (dry-run/paper/live)
+├── cli.py                       # Unified CLI (snapshot, trades, signals, health)
+├── report_engine.py             # 7 PDF report types
+│
+├── dex_executor.py              # DEX execution via Bankr API
+├── dex_trading_agent.py         # DEX LLM trading orchestrator
+├── dex_data_collector.py        # DEX token OHLCV via GeckoTerminal
+│
+├── crypto_data_collector.py     # Coinbase candle fetching
+├── intraday_update.py           # 1h candle refresh + 4h aggregation
+├── equity_data_collector.py     # Equity/index data via yfinance
+├── correlation_tracker.py       # Cross-asset correlations + VIX regime
+├── providers/polymarket.py      # Polymarket data collection
+│
+├── backtest/
+│   ├── engine.py                # Core backtester with walk-forward
+│   ├── strategies/              # 13 registered strategies
+│   ├── compare.py               # Multi-strategy comparison
+│   ├── catalogue.py             # Persistent strategy catalogue
+│   └── deployer.py              # Catalogue → live route bridge
+│
+├── realtime/
+│   ├── ingest/                  # WebSocket clients (Coinbase, Polymarket)
+│   └── supervisor.py            # Multi-feed supervisor with auto-restart
+│
+├── scripts/                     # Manual utilities (bootstrap, tax, reports)
+├── migration/                   # Database schema migrations
+├── docs/                        # Detailed documentation (see index below)
+├── tests/                       # Test scripts
+└── archive/                     # Deprecated files (retained 30 days)
+```
+
+## Portfolios
+
+| Portfolio | ID | Mode | Symbols | Strategy |
+|-----------|-----|------|---------|----------|
+| Galadriel | 1 | paper | ADA, AVAX, BTC, DOGE, UNI, XRP | Per-symbol routing (4h) |
+| Thranduil | 2 | live | — | Inactive |
+| Elrond | 3 | tracked | — | Manual |
+| Arwen | 4 | live (DEX) | VVV, BNKR, WETH, USDC | Base chain via Bankr |
 
 ## Strategies
 
-| Strategy | Type | Best Regime | Description |
-|----------|------|-------------|-------------|
-| ScoreBased | Multi-factor | All | 5-component scoring (momentum/trend/vol/volume/risk) |
-| ScoreBasedRelaxed | Multi-factor | All | Relaxed thresholds for more signals |
-| EnhancedScoreBased | Multi-factor | All | Weighted scoring with confirmation |
-| MACDCross | Momentum | Bull | MACD crossover with volume confirmation |
-| ADXTrend | Trend | Bull | ADX trend strength filter + directional movement |
-| BollingerReversion | Mean-reversion | Sideways | Bollinger Band mean-reversion |
-| MultiSignal | Multi-factor | All | Consensus across RSI, MACD, BB, SMA |
-| TSMOM | Momentum | Bull | 12-month time-series momentum, inverse-vol sizing |
-| TSMOM_3M | Momentum | Bull | 3-month lookback variant |
-| PairsTrading | Mean-reversion | Sideways | Z-score with Ornstein-Uhlenbeck half-life |
-| PairsTrading_Aggressive | Mean-reversion | Sideways | Tighter entry/exit thresholds |
-| RegimeAware | Adaptive | All | HMM regime detection → sub-strategy routing |
-| RegimeAware_Heuristic | Adaptive | All | Heuristic regime detection (no HMM) |
+13 backtested strategies across 4 types:
+
+| Type | Strategies | Best Regime |
+|------|-----------|-------------|
+| Momentum | ScoreBased, ScoreBasedRelaxed, EnhancedScoreBased, MACDCross, TSMOM, TSMOM_3M | Bull |
+| Trend | ADXTrend | Bull |
+| Mean-reversion | BollingerReversion, PairsTrading, PairsTrading_Aggressive | Sideways |
+| Adaptive | RegimeAware, RegimeAware_Heuristic, MultiSignal | All regimes |
+
+Regime detection runs before every signal check. When regime shifts, strategies auto-swap via `regime_monitor.py`.
+
+## Risk Management
+
+- **Stop-loss**: 10% below entry
+- **Trailing stop**: activates after 5% gain, trails at 2x ATR
+- **Take-profit**: scale-out at +15% / +20% / +25%
+- **Circuit breaker**: 15% portfolio drawdown → liquidate all
+- **Position cap**: 25% per position, 40% per sector
+- All thresholds are asset-class-aware via `config.ASSET_CLASS_PROFILES`
+
+## Database
+
+SQLite (`crypto_data.db`), 30+ tables. Key groups: market data (candlesticks, indicators), trading (trades, positions, trade_outcomes), strategy (strategy_registry, strategy_signals_log), portfolios, dimension tables, market intelligence, DEX.
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [SYSTEM_REFERENCE.md](SYSTEM_REFERENCE.md) | Concise system overview with quick commands |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Full architecture, data flow, module reference |
+| [docs/DATABASE.md](docs/DATABASE.md) | Production schema, key queries, data extraction |
+| [docs/STRATEGIES.md](docs/STRATEGIES.md) | 13-strategy catalog with regime affinity matrix |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Systemd timers, daily timeline, troubleshooting |
+| [docs/TRADING_RULES.md](docs/TRADING_RULES.md) | Trading philosophy, risk rules, position sizing |
+| [docs/POLYMARKET.md](docs/POLYMARKET.md) | Polymarket signal overlay integration |
+| [docs/DEX.md](docs/DEX.md) | DEX trading via Bankr API (Arwen portfolio) |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Project roadmap and status |
+
+## Requirements
+
+- Python 3.10+, SQLite 3.35+
+- See `requirements.txt` for Python dependencies
+- Optional: `hmmlearn` for HMM regime detection, `statsmodels` for cointegration tests
 
 ## Environment Variables
-
-See [`.env.example`](.env.example) for the full list. Key variables:
 
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `COINBASE_API_KEY` | For CEX | Coinbase Advanced Trade API key |
 | `COINBASE_API_SECRET` | For CEX | EC private key (PEM format) |
-| `TELEGRAM_CHAT_ID` | For alerts | Telegram chat ID for notifications |
-| `OPENAI_API_KEY` | For LLM agent | GPT-4o-mini for sentiment + trading agent |
+| `TELEGRAM_CHAT_ID` | For alerts | Telegram chat ID |
+| `OPENAI_API_KEY` | For LLM | GPT-4o-mini (sentiment, trading agent) |
 | `BANKR_API_KEY` | For DEX | Bankr API for on-chain trading |
-| `DEX_WALLET_ADDRESS` | For DEX | Your EVM wallet address |
-
-## Database
-
-SQLite-based (`crypto_data.db`), created by `bootstrap_db.py` + migrations. Key tables:
-
-- **candlesticks** / **indicators** — OHLCV + 17 technical indicators across timeframes
-- **trades** / **positions** — full audit trail with trader_id, strategy_id, account_id
-- **strategy_registry** — 13 strategies with type classification and parameters
-- **strategy_catalogue** — backtest results for ranking and portfolio template generation
-- **portfolio_templates** — Sharpe-weighted allocations from best strategies
-- **strategy_swaps** — regime-triggered swap audit log
-- **accounts** — portfolio-to-venue bridge (M:M)
-
-## Requirements
-
-- Python 3.10+
-- SQLite 3.35+
-- See `requirements.txt` for Python dependencies
-- Optional: `hmmlearn` and `statsmodels` for HMM regime detection and cointegration tests
 
 ## License
 
