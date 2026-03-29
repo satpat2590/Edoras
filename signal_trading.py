@@ -445,7 +445,7 @@ class SignalTradingSystem:
 
             # If circuit breaker is active, skip all buy signals
             if self.risk_manager.circuit_breaker_active:
-                logger.warning("Circuit breaker active — suppressing all buy signals")
+                logger.warning("SKIP ALL: circuit_breaker active — suppressing all buy signals")
                 return [], risk_exit_signals, risk_report
 
         # ── Generate trading signals ─────────────────────────────────
@@ -889,6 +889,20 @@ class SignalTradingSystem:
         return signal
 
 
+    def _record_skip(self, sig: Dict, reason: str):
+        """Record a skip reason for a signal in the strategy_signals_log."""
+        if self.strategy_tracker and '_signal_id' in sig:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                conn.execute(
+                    "UPDATE strategy_signals_log SET skip_reason=? WHERE id=?",
+                    (reason, sig['_signal_id']),
+                )
+                conn.commit()
+                conn.close()
+            except Exception as e:
+                logger.debug(f"Could not record skip reason: {e}")
+
     def execute_paper_trades(self, signals: List[Dict], risk_exits: List = None):
         """Execute paper trades based on signals and risk exits."""
         if not self.portfolio:
@@ -950,10 +964,25 @@ class SignalTradingSystem:
                     self.portfolio._pending_strategy_id = sid
 
             if action == 'BUY':
-                # Skip if we already hold this symbol (avoid doubling down)
+                # Check if we already hold this symbol
                 if symbol in self.portfolio.positions:
-                    logger.info(f"Already hold {symbol} — skipping BUY signal")
-                    continue
+                    # Allow adding to positions for high-conviction signals (strength >= 80)
+                    _prof_check = get_asset_class_profile(symbol) if get_asset_class_profile else {}
+                    max_pct = _prof_check.get("max_position_pct", 0.25)
+                    current_pos_value = self.portfolio.get_position_value(symbol)
+                    current_pct = current_pos_value / portfolio_value if portfolio_value > 0 else 1.0
+                    if strength < 80 or current_pct >= max_pct * 0.9:
+                        pos_qty = self.portfolio.positions[symbol].get('quantity', 0)
+                        skip_reason = (f"position_held (qty={pos_qty:.6g}, "
+                                       f"alloc={current_pct:.1%}/{max_pct:.0%})")
+                        if strength >= 80:
+                            skip_reason += " — near max allocation"
+                        logger.info(f"SKIP BUY {symbol}: {skip_reason}")
+                        self._record_skip(sig, skip_reason)
+                        continue
+                    else:
+                        logger.info(f"Adding to {symbol}: high conviction (str={strength:.0f}), "
+                                    f"current alloc={current_pct:.1%} < {max_pct:.0%}")
 
                 # Dedup: skip if same symbol was bought in the last 60 seconds
                 last_buy_time = self.trade_state.get(f'last_buy_{symbol}')
@@ -961,7 +990,8 @@ class SignalTradingSystem:
                     try:
                         elapsed = (datetime.now() - datetime.fromisoformat(last_buy_time)).total_seconds()
                         if elapsed < 60:
-                            logger.info(f"Dedup: {symbol} BUY skipped ({elapsed:.0f}s since last buy)")
+                            logger.info(f"SKIP BUY {symbol}: dedup_window ({elapsed:.0f}s since last buy)")
+                            self._record_skip(sig, f"dedup_window ({elapsed:.0f}s)")
                             continue
                     except Exception:
                         pass
@@ -972,7 +1002,8 @@ class SignalTradingSystem:
                 # strength 65-80 → 5-10% of portfolio (moderate)
                 # strength 80+   → 10-15% of portfolio (high conviction)
                 if strength < 50:
-                    logger.info(f"Signal too weak for {symbol}: strength={strength:.1f} < 50")
+                    logger.info(f"SKIP BUY {symbol}: strength_too_low ({strength:.1f} < 50)")
+                    self._record_skip(sig, f"strength_too_low ({strength:.1f})")
                     continue
                 if strength >= 80:
                     alloc_pct = 0.10 + min((strength - 80) / 200, 0.05)
@@ -986,12 +1017,21 @@ class SignalTradingSystem:
                 max_pct = _prof.get("max_position_pct", 0.25)
                 alloc_pct = min(alloc_pct, max_pct)
 
+                # If adding to existing position, reduce alloc to fill up to max
+                if symbol in self.portfolio.positions:
+                    current_pos_value = self.portfolio.get_position_value(symbol)
+                    current_pct = current_pos_value / portfolio_value if portfolio_value > 0 else 0
+                    remaining_pct = max_pct - current_pct
+                    alloc_pct = min(alloc_pct, remaining_pct)
+
                 buy_amount = portfolio_value * alloc_pct
                 buy_amount = min(buy_amount, self.portfolio.capital * 0.95)  # keep 5% cash reserve
 
                 min_trade = _prof.get("min_trade_usd", 10.0)
                 if buy_amount < min_trade:
-                    logger.info(f"Buy amount ${buy_amount:.2f} below min ${min_trade:.0f} for {symbol}")
+                    logger.info(f"SKIP BUY {symbol}: insufficient_cash "
+                                f"(${buy_amount:.2f} < min ${min_trade:.0f})")
+                    self._record_skip(sig, f"insufficient_cash (${buy_amount:.2f})")
                     continue
 
                 logger.info(f"Signal BUY {symbol}: strength={strength:.1f}, amount=${buy_amount:.2f}")
@@ -1005,7 +1045,8 @@ class SignalTradingSystem:
 
             elif action == 'SELL':
                 if symbol not in self.portfolio.positions:
-                    logger.info(f"No position in {symbol} — skipping SELL signal")
+                    logger.info(f"SKIP SELL {symbol}: no_position_to_sell")
+                    self._record_skip(sig, "no_position_to_sell")
                     continue
 
                 # Minimum holding period (asset-class-aware, prevents fee-destroying churn)
@@ -1018,7 +1059,9 @@ class SignalTradingSystem:
                         entry_dt = datetime.fromisoformat(entry_date_str)
                         held_hours = (datetime.now() - entry_dt).total_seconds() / 3600
                         if held_hours < min_hold:
-                            logger.info(f"Min hold: {symbol} held {held_hours:.1f}h < {min_hold}h — skipping SELL")
+                            logger.info(f"SKIP SELL {symbol}: min_hold_period "
+                                        f"(held {held_hours:.1f}h < {min_hold}h)")
+                            self._record_skip(sig, f"min_hold_period ({held_hours:.1f}h)")
                             continue
                     except Exception:
                         pass

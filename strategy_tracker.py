@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS strategy_signals_log (
     market_regime TEXT,
     adx REAL,
     rsi REAL,
+    skip_reason TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -105,6 +106,10 @@ class StrategyTracker:
     def _ensure_tables(self):
         conn = sqlite3.connect(self.db_path)
         conn.executescript(SCHEMA_SQL)
+        # Migrate: add skip_reason column if missing (added 2026-03-29)
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(strategy_signals_log)")]
+        if "skip_reason" not in cols:
+            conn.execute("ALTER TABLE strategy_signals_log ADD COLUMN skip_reason TEXT")
         conn.commit()
         conn.close()
 

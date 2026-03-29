@@ -14,6 +14,7 @@ Usage:
 
 import argparse
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -543,6 +544,18 @@ def _print_trade_reasoning(decision_context):
 
 # ── main ─────────────────────────────────────────────────────────────────────
 
+def cmd_signal_trace(args):
+    """Trace signal flow through execution gates."""
+    import subprocess
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    cmd = [sys.executable, os.path.join(script_dir, "scripts", "verify_signal_flow.py")]
+    if args.symbol:
+        cmd.append(args.symbol)
+    if args.recent:
+        cmd.append("--recent")
+    subprocess.run(cmd)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="edoras",
@@ -582,6 +595,11 @@ def main():
     dex_p.add_argument("--reason", type=str, default="", help="Trade reason")
     dex_p.add_argument("--hours", type=int, default=24, help="Lookback hours (txns)")
 
+    # Signal flow trace
+    p = sub.add_parser("signal-trace", help="Trace signal flow through execution gates")
+    p.add_argument("symbol", nargs="?", help="Trace a specific symbol")
+    p.add_argument("--recent", action="store_true", help="Show recent skip reasons")
+
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -596,6 +614,7 @@ def main():
         "indicators": cmd_indicators,
         "health": cmd_health,
         "dex": cmd_dex,
+        "signal-trace": cmd_signal_trace,
     }
     commands[args.command](args)
 

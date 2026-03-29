@@ -32,9 +32,11 @@ from config import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-# LLM config — use DeepSeek Reasoner as primary, OpenAI as fallback
+# LLM config — use DeepSeek Reasoner as primary, OpenAI as fallback, Mac Mini MLX as last resort
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+MLX_BASE_URL = os.getenv("MLX_BASE_URL", "http://192.168.1.50:8008/v1")
+MLX_MODEL = os.getenv("MLX_MODEL", "reasoning")
 
 
 class TradingAgent:
@@ -633,7 +635,26 @@ class TradingAgent:
             except Exception as e:
                 logger.warning(f"DeepSeek failed: {e}")
 
-        logger.error("All LLM providers failed")
+        # Try Mac Mini MLX (LAN, free, no quota limits)
+        try:
+            import openai
+            client = openai.OpenAI(api_key="mlx-local", base_url=MLX_BASE_URL)
+            resp = client.chat.completions.create(
+                model=MLX_MODEL,
+                messages=[
+                    {"role": "system", "content": "You are a quantitative trading agent. Always respond with valid JSON."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.2,
+                max_tokens=2000,
+            )
+            content = resp.choices[0].message.content.strip()
+            logger.info(f"MLX (Mac Mini) responded ({len(content)} chars)")
+            return content
+        except Exception as e:
+            logger.warning(f"MLX (Mac Mini) failed: {e}")
+
+        logger.error("All LLM providers failed (OpenAI, DeepSeek, MLX)")
         return None
 
     def _parse_llm_response(self, response: str) -> Optional[Dict]:
