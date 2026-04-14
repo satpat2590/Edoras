@@ -14,12 +14,9 @@ import argparse
 import os
 import sqlite3
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 DEFAULT_DB = os.path.join(BASE_DIR, "crypto_data.db")
-
-# ── Enhanced schema (from schema/enhanced_schema_sqlite.sql) ────────────────
-
-ENHANCED_SCHEMA = os.path.join(BASE_DIR, "schema", "enhanced_schema_sqlite.sql")
+ENHANCED_SCHEMA = os.path.join(BASE_DIR, "config", "schema", "enhanced_schema_sqlite.sql")
 
 # ── Operational tables created by individual scripts ────────────────────────
 # These aren't in the enhanced schema file but are required at runtime.
@@ -165,12 +162,18 @@ def bootstrap(db_path: str):
     conn.commit()
 
     # Summary
-    tables = [r[0] for r in cur.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-    ).fetchall()]
-    views = [r[0] for r in cur.execute(
-        "SELECT name FROM sqlite_master WHERE type='view' ORDER BY name"
-    ).fetchall()]
+    tables = [
+        r[0]
+        for r in cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        ).fetchall()
+    ]
+    views = [
+        r[0]
+        for r in cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='view' ORDER BY name"
+        ).fetchall()
+    ]
     conn.close()
 
     print(f"\nBootstrapped {db_path}")

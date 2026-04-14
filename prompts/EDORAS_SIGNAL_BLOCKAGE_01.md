@@ -19,7 +19,7 @@ The evidence from the last 7 days:
 
 **TSMOM_3M is generating signals at strength 100 (maximum possible) and zero are executing.** MultiSignal generates 8 signals and none execute. legacy_momentum generates 43 signals and only 2 execute. Something in the execution gating logic is blocking nearly everything.
 
-The system is net negative over 30 days: 46.7% win rate, -$1.32 P&L, profit factor 0.97 on a ~$954 portfolio. But the LLM agent (Regi) averaging +1.17% per trade suggests the signals themselves aren't bad — they're just not reaching execution.
+The system is net negative over 30 days: 46.7% win rate, -$1.32 P&L, profit factor 0.97 on a ~$954 portfolio. But the LLM agent (Argus) averaging +1.17% per trade suggests the signals themselves aren't bad — they're just not reaching execution.
 
 ## Your Task
 

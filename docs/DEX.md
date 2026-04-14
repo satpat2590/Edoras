@@ -57,7 +57,7 @@ Signal Engine / Aleph
 ## CLI Commands
 
 ```bash
-cd ~/.openclaw/workspace/projects/edoras
+cd ~/edoras
 python3 cli.py dex balance              # Wallet balance
 python3 cli.py dex buy BNKR-BASE 50    # Buy $50 worth
 python3 cli.py dex sell WETH-BASE 0.01  # Sell 0.01 WETH

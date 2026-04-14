@@ -1,6 +1,6 @@
 # Edoras Trading System -- Operations Runbook
 
-Last updated: 2026-03-29
+Last updated: 2026-04-02
 
 All times are **EDT (UTC-4)** unless noted. The system runs on local time via systemd user timers. Most timers include `RandomizedDelaySec` jitter to avoid API thundering herd.
 
@@ -12,7 +12,7 @@ All times are **EDT (UTC-4)** unless noted. The system runs on local time via sy
 
 | Timer | Schedule | Description | Runs |
 |-------|----------|-------------|------|
-| `openclaw-gateway-watchdog` | Every 60s | Health-checks the OpenClaw gateway; restarts if unresponsive or inactive | Inline bash (nc probe on port 18789) |
+| `hermes-gateway-watchdog` | Every 60s | Health-checks the Hermes gateway; restarts if unresponsive or inactive | Inline bash (nc probe on port 18789) |
 | `risk-guardian` | Every 30 min, 07:00--22:30 | Position stop-loss, trailing stop, take-profit checks | `run_risk_guardian.sh` -> `risk_guardian.py --check` |
 | `crypto-price-alerts` | Every 30 min, 07:00--20:00 | Price movement alerts to Telegram | `price_alerts_cron.sh` -> `price_alerts.py --check` |
 | `crypto-intraday-update` | Every 2h (odd hours: 01,03,...,23) | Fetches 1h candles, aggregates 4h, computes indicators | `intraday_update.py` (direct) |
@@ -63,7 +63,7 @@ All times are **EDT (UTC-4)** unless noted. The system runs on local time via sy
 | Service | Description |
 |---------|-------------|
 | `coinbase-websocket` | Real-time WebSocket market data feed (auto-restarts, 512M memory cap) |
-| `openclaw-gateway` | OpenClaw gateway on port 18789 (auto-restarts, 2G memory cap) |
+| `hermes-gateway` | Hermes gateway on port 18789 (auto-restarts, 2G memory cap) |
 
 ---
 
@@ -169,7 +169,7 @@ Price alerts run every 30 minutes from 07:00 to 20:00 (not shown individually).
 
 ## 4. Shell Scripts
 
-All scripts live in the project root: `~/.openclaw/workspace/projects/edoras/`
+All scripts live in the project root: `~/edoras/`
 
 | Script | Wraps | Called By |
 |--------|-------|-----------|
@@ -202,7 +202,7 @@ set -a && source ~/.config/coinbase.env && set +a
 
 The shell scripts also extract credentials from `~/.zshrc` as a fallback (grepping for `COINBASE_API_KEY`, `COINBASE_API_SECRET`, etc.).
 
-### Node.js / OpenClaw CLI
+### Node.js / Hermes CLI
 
 All scripts hardcode the nvm path:
 
@@ -210,7 +210,7 @@ All scripts hardcode the nvm path:
 export PATH="$HOME/.nvm/versions/node/v22.22.1/bin:$PATH"
 ```
 
-The `openclaw` CLI is used for Telegram message delivery.
+The `hermes` CLI is used for Telegram message delivery.
 
 ### Telegram
 
@@ -220,7 +220,7 @@ The `openclaw` CLI is used for Telegram message delivery.
 ### Manual Script Invocation
 
 ```bash
-cd ~/.openclaw/workspace/projects/edoras
+cd ~/edoras
 set -a && source ~/.config/coinbase.env && set +a
 export PATH="$HOME/.nvm/versions/node/v22.22.1/bin:$PATH"
 
@@ -237,7 +237,7 @@ bash run_daily_analysis.sh
 ### Quick Health Check
 
 ```bash
-cd ~/.openclaw/workspace/projects/edoras
+cd ~/edoras
 python3 cli.py health
 ```
 
@@ -256,20 +256,20 @@ Check for timers where NEXT shows `n/a` (disabled) or where PASSED is unusually 
 ```bash
 systemctl --user status crypto-signal-trading.service
 systemctl --user status coinbase-websocket.service
-systemctl --user status openclaw-gateway.service
+systemctl --user status hermes-gateway.service
 ```
 
 ### Gateway Health
 
 ```bash
 # Is the gateway alive?
-systemctl --user is-active openclaw-gateway.service
+systemctl --user is-active hermes-gateway.service
 
 # Port check
 nc -zw2 127.0.0.1 18789 && echo "OK" || echo "DOWN"
 
 # Outage history
-cat ~/.openclaw/workspace/monitoring/outage-log.jsonl | tail -10
+cat ~/.hermes/workspace/monitoring/outage-log.jsonl | tail -10
 ```
 
 ### WebSocket Feed
@@ -282,7 +282,7 @@ journalctl --user -u coinbase-websocket -n 20 --no-pager
 ### Data Freshness (SQL)
 
 ```bash
-cd ~/.openclaw/workspace/projects/edoras
+cd ~/edoras
 python3 -c "
 import sqlite3, time
 conn = sqlite3.connect('crypto_data.db')
@@ -307,7 +307,7 @@ journalctl --user -u crypto-signal-trading -n 50 --no-pager
 journalctl --user -u crypto-daily-analysis --since "today" --no-pager
 journalctl --user -u risk-guardian --since "1 hour ago" --no-pager
 journalctl --user -u coinbase-websocket -f          # Live tail
-journalctl --user -u openclaw-gateway -n 100
+journalctl --user -u hermes-gateway -n 100
 journalctl --user -u dex-data-collection --since "today"
 journalctl --user -u polymarket-ingest --since "today"
 ```
@@ -331,7 +331,7 @@ Some shell scripts also write to local log files:
 ### Monitoring
 
 ```
-~/.openclaw/workspace/monitoring/outage-log.jsonl   # Gateway restart events
+~/.hermes/workspace/monitoring/outage-log.jsonl   # Gateway restart events
 ```
 
 ---
@@ -351,7 +351,7 @@ Some shell scripts also write to local log files:
    ```
 3. Manual refresh:
    ```bash
-   cd ~/.openclaw/workspace/projects/edoras
+   cd ~/edoras
    set -a && source ~/.config/coinbase.env && set +a
    python3 intraday_update.py
    ```
@@ -377,8 +377,8 @@ Some shell scripts also write to local log files:
 The watchdog checks every 60 seconds and auto-restarts. If it stays down:
 
 ```bash
-journalctl --user -u openclaw-gateway -n 50 --no-pager
-systemctl --user restart openclaw-gateway.service
+journalctl --user -u hermes-gateway -n 50 --no-pager
+systemctl --user restart hermes-gateway.service
 ```
 
 Check for port conflicts or memory exhaustion (2G cap).
@@ -392,6 +392,11 @@ Check for port conflicts or memory exhaustion (2G cap).
 2. Check risk state for circuit breaker:
    ```bash
    cat risk_state.json
+   ```
+   The circuit breaker auto-resets after 24h cooldown (with no positions) or when cash ≥ 80% of portfolio.
+   To force-reset manually:
+   ```bash
+   python3 -c "from risk_manager import RiskManager; rm = RiskManager(); rm.reset_circuit_breaker()"
    ```
 3. Dry run:
    ```bash
@@ -415,15 +420,15 @@ Check for port conflicts or memory exhaustion (2G cap).
 
 ### Telegram Delivery Failures
 
-- Verify the openclaw CLI is reachable:
+- Verify the hermes CLI is reachable:
   ```bash
   export PATH="$HOME/.nvm/versions/node/v22.22.1/bin:$PATH"
-  openclaw --version
+  hermes --version
   ```
 - Check the gateway is running (Telegram messages route through it)
 - Test send:
   ```bash
-  openclaw message send --channel telegram --target "$TELEGRAM_CHAT_ID" --message "test"
+  hermes message send --channel telegram --target "$TELEGRAM_CHAT_ID" --message "test"
   ```
 
 ### DEX Data Collection Failures

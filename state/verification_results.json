@@ -1,0 +1,31 @@
+{
+  "timestamp": "2026-04-13T18:38:15.148058",
+  "checks": {
+    "python_environment": {
+      "passed": true,
+      "message": "config module importable, DB_PATH=/home/satyamini/edoras/crypto_data.db",
+      "timestamp": "2026-04-13T18:38:15.153365"
+    },
+    "coinbase_credentials": {
+      "passed": true,
+      "message": "Coinbase API credentials present",
+      "timestamp": "2026-04-13T18:38:15.153425"
+    },
+    "database_accessible": {
+      "passed": true,
+      "message": "Database accessible with 3/3 tables",
+      "timestamp": "2026-04-13T18:38:15.159504"
+    },
+    "disk_space": {
+      "passed": true,
+      "message": "711.9GB free disk space",
+      "timestamp": "2026-04-13T18:38:15.159570"
+    },
+    "network_connectivity": {
+      "passed": true,
+      "message": "Network connectivity OK",
+      "timestamp": "2026-04-13T18:38:15.318164"
+    }
+  },
+  "overall_status": "PASS"
+}

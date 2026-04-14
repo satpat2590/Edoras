@@ -1,12 +1,14 @@
 # Trading System Architecture
 
-Last updated: 2026-03-29 | Verified against code: 2026-03-29
+Last updated: 2026-04-05 | Verified against code: 2026-04-05
 
 ## Overview
 
-Multi-asset, multi-exchange trading analysis and execution system. Covers crypto (Coinbase), prediction markets (Polymarket), equities (yfinance), and cross-asset correlation tracking with VIX-based regime detection. Delivers alerts and reports via OpenClaw → Telegram.
+Multi-asset, multi-exchange trading analysis and execution system. Covers crypto (Coinbase CEX + Base DEX via Bankr), prediction markets (Polymarket), equities (yfinance), and cross-asset correlation tracking with VIX-based regime detection. Delivers alerts and reports via Hermes → Telegram.
 
 Four named portfolios (Galadriel/paper, Thranduil/live, Elrond/tracked, Arwen/DEX-live), exchange-agnostic WebSocket architecture, and dimension-table-driven metadata. Portfolio-to-venue mapping via `accounts` bridge table. Warehouse redesign Phase 1-3 complete: all read/write queries route through `account_id` (Phase 4 pending: deprecate `portfolio_id` on trades/positions).
+
+Modular backtesting engine (`src/edoras/backtest/`) supports single-symbol and multi-asset portfolio backtesting with per-asset-class fee/risk resolution, adaptive Kelly sizing, multi-timeframe context dispatch, and walk-forward validation with in-sample fitting. 10 active strategies with a `Strategy` base class supporting `generate_signals()`, `generate_signals_multi()` (pairs), `generate_signals_ctx()` (multi-TF), and `fit()` (walk-forward). DB schema links strategy_catalogue ↔ strategy_performance ↔ strategy_registry via additive migrations.
 
 ## Data Flow
 
@@ -25,14 +27,26 @@ REST GAP-FILL                       │    ├── standard profile (17 indica
 Coinbase REST ──→ intraday_update   │               │
 Polymarket REST → polymarket.py ────┘               ▼
 yfinance ───────→ equity_data_collector.py    signal_trading.py
-RSS feeds ──────→ sentiment.py               ├── strategy routing (7 strategies)
+RSS feeds ──────→ sentiment.py               ├── strategy routing (13 strategies)
                                              ├── risk_manager.py (stops, CB)
                                              ├── regime adjustment (VIX)
 DIMENSION TABLES                             ├── multi-portfolio iteration
 ────────────────                             └── paper_trading.py → trade_journal.py
 exchanges, securities,                                │
 strategy_registry, portfolios                         ▼
-                                             OpenClaw CLI → Telegram
+                                             Hermes CLI → Telegram
+
+LLM TRADING PIPELINE (Two-Stage)
+──────────────────────────────────────────────────────────────────
+Stage 1: research_agent.py                Stage 2: trading_agent.py
+├── sentiment.py (RSS → LLM scoring)      ├── ResearchBrief (from Stage 1)
+├── market_intelligence.py (vector sim)   ├── signal_trading.py (quant signals)
+├── research_reader.py (arXiv insights)   ├── advanced_scorer.py (scores)
+├── correlation_tracker.py (regime)       ├── portfolio state + journal
+└── LLM narrative synthesis               └── LLM trade decisions
+         │                                         │
+         ▼                                         ▼
+    ResearchBrief ──────────────────────→ paper_trading.py → trade_journal.py
 ```
 
 ## Cross-Asset Portfolio Support
@@ -102,7 +116,20 @@ overlay pipeline).
 | `equity_data_collector.py` | Equity + index data via yfinance with US market hours awareness |
 | `dex_data_collector.py` | DEX token OHLCV + metadata via GeckoTerminal (every 2h timer) |
 | `providers/polymarket.py` | Polymarket REST: market discovery (Gamma API) + price ingestion (CLOB API) |
-| `sentiment.py` | RSS news sentiment via GPT-4o-mini |
+| `sentiment.py` | RSS news sentiment via LLMChain (5-tier fallback) |
+
+### LLM Trading Pipeline
+
+| Module | Purpose |
+|--------|---------|
+| `research_agent.py` | **Stage 1**: Gathers qualitative context (sentiment, historical patterns, arXiv insights, macro regime). Produces a `ResearchBrief` with market narrative, per-symbol sentiment, risk flags, and catalyst calendar. |
+| `trading_agent.py` | **Stage 2**: Combines `ResearchBrief` + quantitative signals + scores + portfolio state + trade journal. Dynamic self-preservation rules constrain behavior based on historical win rates. Outputs BUY/SELL decisions requiring both `quant_support` and `research_support` evidence. |
+| `llm_chain.py` | Shared 5-tier LLM fallback (DeepSeek → Nous → Claude → GPT-4o → MLX). Per-provider rate limiting, caching, JSON parsing, static fallback guarantee. |
+| `llm_gatekeeper.py` | Fail-open BUY signal validator for the signal engine path (separate from the LLM trading pipeline). Batch validation, 5-min cache, APPROVE/REJECT/MODIFY decisions. |
+| `market_intelligence.py` | sqlite-vec backed vector store for market context, daily snapshots, trade rationales. Numeric similarity for historical condition matching. |
+| `research_reader.py` | arXiv paper ingestion across 7 topic groups (finance, ML, complex systems). LLM-powered reflection journaling. Insights stored in vector memory. |
+| `sentiment.py` | Crypto news sentiment from 4 RSS feeds (CoinDesk, Decrypt, CryptoSlate, Bitcoin.com). Per-symbol keyword matching, LLM scoring, SQLite persistence. |
+| `vector_store.py` | Unified sqlite-vec backend. 3 collections: market_memory (1536d), trade_outcomes_vec (1536d), workspace_chunks (3072d). |
 
 ### Analysis & Scoring
 
@@ -117,14 +144,26 @@ overlay pipeline).
 
 | Module | Purpose |
 |--------|---------|
-| `risk_manager.py` | Stop-loss (10%), trailing stop (ATR-based after 5% gain), take-profit scale-out (15/20/25%), circuit breaker (15% drawdown), sector limits (40%) |
+| `risk_manager.py` | Stop-loss (10%), trailing stop (ATR-based after 5% gain), take-profit scale-out (15/20/25%), circuit breaker (15% drawdown, auto-reset after 24h cooldown or ≥80% cash), sector limits (40%) |
 | `exit_signals.py` | Data classes for ExitSignal, CircuitBreaker, RiskViolation |
 
 ### Backtesting
 
 | Module | Purpose |
 |--------|---------|
-| `backtester.py` | Event-driven backtester, 7 strategies (BollingerReversion, MultiSignal, ADXTrend, ScoreBased, ScoreBasedRelaxed, MACDCross, ScoreBasedStrategy), 166 backtests complete |
+| `backtest/engine.py` | Event-driven single-symbol backtester with walk-forward validation, per-asset-class fee/risk resolution, adaptive Kelly sizing, and multi-timeframe context dispatch |
+| `backtest/portfolio_engine.py` | Multi-asset portfolio backtester: N strategies × N symbols sharing capital, per-symbol FeeModel/RiskConfig, SELLs-before-BUYs ordering, optional periodic rebalancing |
+| `backtest/signals.py` | `Signal` dataclass (BUY/SELL/REDUCE/CLOSE) with confidence, target_position_pct, metadata — backward-compatible with legacy dict signals |
+| `backtest/risk_config.py` | `RiskConfig` dataclass: configurable stop-loss, trailing stop, take-profit, max position per backtest run. Auto-resolves from `ASSET_CLASS_PROFILES` |
+| `backtest/fee_model.py` | `FeeModel` dataclass: per-asset-class fees (crypto 0.1%, equity 0%, prediction 2%) and slippage modeling. Auto-resolves from `ASSET_CLASS_PROFILES` |
+| `backtest/context.py` | `StrategyContext` for strategies needing multi-timeframe or reference data (e.g. VIX). Prevents direct DB queries inside strategies, eliminates lookahead bias |
+| `backtest/catalogue.py` | Persistent strategy catalogue + performance archive, source tracking (backtest/walk_forward/holdout_gate/portfolio_backtest) |
+| `backtest/deployer.py` | Strategy deployment and routing to live system, links registry to qualifying catalogue entry |
+| `backtest/validation.py` | Anchored walk-forward (with in-sample fit()), cost sensitivity sweep, holdout gating |
+| `backtest/portfolio_state.py` | `PortfolioState`/`PositionState` for multi-asset position tracking with legacy dict conversion |
+| `backtest/portfolio_metrics.py` | `PortfolioBacktestResult` with per-symbol equity curves, correlation matrix, P&L contribution |
+| `backtest/migrations/` | Additive schema migrations: cross-references between strategy_catalogue ↔ strategy_performance ↔ strategy_registry, trade_outcomes FK fix |
+| `backtest/strategies/` | 10 registered strategies (13 total incl. retired). Base class supports `generate_signals()`, `generate_signals_multi()`, `generate_signals_ctx()`, and `fit()` |
 
 ### Execution
 
@@ -157,7 +196,7 @@ overlay pipeline).
 
 ### Portfolio-Level (implemented in `risk_manager.py`)
 
-- **Circuit breaker**: 15% portfolio drawdown from peak → liquidate all
+- **Circuit breaker**: 15% portfolio drawdown from peak → liquidate all; auto-resets after 24h cooldown or when cash ≥ 80% of portfolio value
 - **Position concentration**: max 25% per position
 - **Sector exposure**: max 40% per sector
 
@@ -167,7 +206,7 @@ Risk checks run BEFORE buy signals:
 1. Portfolio drawdown check (circuit breaker)
 2. Per-position stop-loss/trailing/take-profit
 3. Sector and concentration violations
-4. If circuit breaker active → all buy signals suppressed
+4. If circuit breaker active → attempt auto-reset (cooldown or cash ratio), then suppress buys if still active
 5. Regime adjustment: risk-off dampens buys 0.5x, amplifies sells 1.3x
 
 ## Asset Universe
@@ -203,7 +242,7 @@ Key timers: `crypto-signal-trading` (every 4h), `crypto-intraday-update` (every 
 
 ### First-time setup
 ```bash
-cd ~/.openclaw/workspace/projects/edoras
+cd ~/edoras
 
 # 1. Backfill 400+ days of crypto history (~2 min)
 python3 historical_backfill.py --days 400
@@ -220,18 +259,37 @@ python3 equity_data_collector.py --validate
 ```
 
 ### Running backtests
-```bash
-# Single-symbol backtest with risk management
-python3 backtester.py --symbol BTC-USD --start 2025-04-01 --end 2026-03-01
+```python
+from edoras.backtest import run_backtest, run_portfolio_backtest, STRATEGY_REGISTRY
+from edoras.backtest import Backtester, PortfolioBacktester, RiskConfig, FeeModel
 
-# Compare with/without risk management
-python3 backtester.py --symbol BTC-USD --start 2025-04-01 --end 2026-03-01 --no-risk
+# Single-symbol backtest (auto-resolves asset-class fees and risk params)
+result = run_backtest("EnhancedScoreBased", "BTC-USD", timeframe="1d",
+                      start_date="2025-06-01", end_date="2026-03-01")
 
-# Walk-forward validation
-python3 backtester.py --symbol BTC-USD --walk-forward
+# Single-symbol with custom risk/fee params
+bt = Backtester(
+    risk_config=RiskConfig(stop_loss_pct=0.05, trailing_stop_pct=0.03),
+    fee_model=FeeModel(fee_pct=0.002, slippage_bps=5.0),
+    sizing_mode="kelly",  # adaptive Kelly sizing with running win/loss stats
+)
+result = bt.run(STRATEGY_REGISTRY["TSMOM"](), "BTC-USD", "1d", "2025-06-01", "2026-03-01")
 
-# MACD crossover baseline
-python3 backtester.py --symbol ETH-USD --strategy macd
+# Multi-asset portfolio backtest
+result = run_portfolio_backtest([
+    {"strategy": "TSMOM", "symbol": "BTC-USD", "weight": 0.4, "timeframe": "1d"},
+    {"strategy": "BollingerReversion", "symbol": "ETH-USD", "weight": 0.3, "timeframe": "1d"},
+    {"strategy": "MultiSignal", "symbol": "LINK-USD", "weight": 0.3, "timeframe": "1d"},
+], start_date="2025-06-01", end_date="2026-03-01")
+# result.metrics — portfolio Sharpe, drawdown, etc.
+# result.per_symbol_metrics — per-symbol breakdown
+# result.correlation_matrix — return correlations
+
+# Walk-forward validation with strategy fitting
+from edoras.backtest import anchored_walk_forward
+wf = anchored_walk_forward(STRATEGY_REGISTRY["TSMOM"](), "BTC-USD",
+                           start_date="2024-06-01", end_date="2026-03-01",
+                           oos_months=3, n_folds=4)
 ```
 
 ### Live execution (when ready)

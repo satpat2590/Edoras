@@ -1,7 +1,7 @@
 # Trading System Roadmap — Path to Live Trading
 
 _Living document. Updated as phases are completed._
-_Last updated: 2026-03-16_
+_Last updated: 2026-04-05_
 
 ## Current State
 
@@ -11,14 +11,15 @@ _Last updated: 2026-03-16_
 - Exchange-agnostic WebSocket architecture: Coinbase + Polymarket feeds via multi-feed supervisor
 - REST gap-fill: crypto (2h), DEX (2h), Polymarket (4h), equity (daily)
 - Dual indicator profiles: standard (17 indicators) + binary (16 indicators for prediction markets)
-- 7 backtested strategies, 166 backtest results, per-symbol strategy routing
+- 13 backtested strategies (10 active + 3 retired), 162+ backtest results, per-symbol strategy routing
+- Modular backtesting engine: single-symbol + multi-asset portfolio backtester, per-asset-class fees/risk, adaptive Kelly sizing, multi-timeframe context, walk-forward fitting
 - 4 named portfolios: Galadriel (paper/active), Thranduil (live/pending), Elrond (tracked/pending), Arwen (DEX-live/active)
 - Warehouse redesign Phase 1-3 complete: accounts bridge table, dual-write account_id, all read queries migrated to account-based filtering
-- Dimension tables: exchanges (5 venues), securities (52+), strategy_registry (7), portfolios (4), accounts (4), traders (5)
+- Dimension tables: exchanges (5 venues), securities (382), strategy_registry (13), portfolios (4), accounts (4), traders (6)
 - Risk guardian every 30 min (stops, trailing, TP, circuit breaker)
 - DEX risk rules: liquidity, slippage, holder count, position vs pool
 - Trade journal with outcome tracking (trade_outcomes table)
-- Two agents: Aleph (general-purpose, DEX executor) and Regi (quant specialist, @reginaldonaldobot)
+- Two agents: Aleph (general-purpose, DEX executor) and Regi (quant specialist, @reginaldonaldobot), plus 4 system traders (signal_engine, risk_engine, weekly_rebalancer, satyam)
 - Paper trading 4x daily with DB position sync
 
 ---
@@ -146,9 +147,15 @@ _Last updated: 2026-03-16_
 **Goal:** Increase capital, add strategies, and expand asset universe.
 
 ### Tasks
-- [ ] Multi-strategy portfolio (momentum + mean-reversion + macro)
-- [ ] Strategy-level allocation based on rolling performance
-- [ ] Kelly criterion position sizing (replace flat % allocation)
+- [x] Multi-strategy portfolio backtester (`PortfolioBacktester` — N strategies × N symbols sharing capital, per-symbol fee/risk)
+- [x] Strategy-level allocation based on rolling performance (weight-based capital partitioning in portfolio engine)
+- [x] Kelly criterion position sizing (`_KellyTracker` with running win/loss stats, exponential weighting, adaptive fraction)
+- [x] Per-asset-class fee/risk resolution (`FeeModel.from_asset_profile()`, `RiskConfig.from_asset_profile()`)
+- [x] Multi-timeframe context for strategies (`StrategyContext`, `generate_signals_ctx()` — eliminates direct DB queries, prevents lookahead)
+- [x] DB schema unification (strategy_catalogue ↔ strategy_performance ↔ strategy_registry cross-references, trade_outcomes FKs)
+- [x] Walk-forward fitting (`Strategy.fit()` called on in-sample data before OOS evaluation)
+- [x] Richer signal model (`Signal` dataclass: BUY/SELL/REDUCE/CLOSE, confidence, target_position_pct, metadata)
+- [x] Real pairs trading spread (PairsTrading `generate_signals_multi()` with actual log-price ratio)
 - [ ] Cross-asset hedging (reduce crypto when BTC-SPY correlation > 0.8 + risk-off)
 - [ ] ML signal classifier (XGBoost pre-filter on trade journal data)
 - [ ] Multi-exchange support (Binance, Kraken for better execution)
@@ -164,7 +171,7 @@ _Last updated: 2026-03-16_
 - [ ] Multi-exchange crypto (Binance, Kraken — subclass BaseWebSocketClient)
 - [ ] Prediction market trading strategy development (leverage binary indicators)
 - [ ] News article vector store for semantic retrieval
-- [ ] Dashboard: web UI showing portfolio, regime, recent trades
+- [x] Dashboard: TUI showing portfolios, data feeds, positions, signals, risk, timers (`dashboard.py` / `edoras-dashboard` binary)
 - [ ] Database backup strategy (daily SQLite backup)
 - [ ] Alerting escalation (3+ risk events/hour → escalate beyond Telegram)
 - [ ] Requirements.txt / pyproject.toml for dependency pinning
@@ -176,6 +183,11 @@ _Last updated: 2026-03-16_
 
 | Date | Item | Notes |
 |------|------|-------|
+| 2026-04-05 | Backtesting engine overhaul (5 phases) | Signal/RiskConfig/FeeModel abstractions, multi-asset PortfolioBacktester, DB schema unification (migrations), multi-TF StrategyContext, adaptive Kelly sizing, walk-forward fit(). 10 new files, 8 modified in `src/edoras/backtest/` |
+| 2026-04-02 | Circuit breaker auto-reset | 24h cooldown + 80% cash ratio paths, no more permanent latch |
+| 2026-04-02 | Live TUI dashboard | `dashboard.py` + standalone `edoras-dashboard` binary via PyInstaller |
+| 2026-04-01 | LLM fallback chain enhancement | 5-tier: DeepSeek → Nous → Claude → OpenAI → MLX local |
+| 2026-03-31 | 6 additional strategies | TSMOM, TSMOM_3M, PairsTrading, PairsTrading_Aggressive, RegimeAware, RegimeAware_Heuristic |
 | 2026-03-16 | Warehouse Phase 3: query migration | All read queries use account_id, 8 files updated, fallback for NULL |
 | 2026-03-15 | Warehouse Phase 1+2 | accounts bridge, dual-write account_id in all execution modules |
 | 2026-03-15 | DEX integration (Arwen portfolio) | bankr_client, dex_executor, dex_data_collector, GeckoTerminal |

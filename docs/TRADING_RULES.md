@@ -151,7 +151,7 @@ show the defaults; the crypto column matches the legacy hardcoded values.
 
 | Rule | Crypto | Equity | Prediction | Index |
 |------|--------|--------|------------|-------|
-| Circuit breaker | −15% drawdown | −15% drawdown | −15% drawdown | −15% drawdown |
+| Circuit breaker | −15% drawdown (auto-reset: 24h cooldown or ≥80% cash) | −15% drawdown | −15% drawdown | −15% drawdown |
 | Max position pct | 25% | 15% | 10% | 20% |
 | Max sector pct | 40% | 35% | 25% | 50% |
 
@@ -178,11 +178,48 @@ All modules call `config.get_asset_class_profile(symbol)` which:
 
 ---
 
+## Exit Strategy
+
+### Three-Layer Exit Architecture
+
+Edoras uses three independent layers for exiting positions, from smartest to most mechanical:
+
+1. **Entry Strategy Exits** — the routed strategy (BollingerReversion, TSMOM, etc.) can generate SELL signals based on its own logic. This is the fastest but only works when the strategy is active in the current regime.
+
+2. **Exit Overlay** (`exit_overlay.py`) — runs on ALL held positions regardless of entry strategy. Checks momentum, trend structure, volatility, correlation, and hold time. Catches regime transitions that the entry strategy misses. Active when:
+   - Momentum turns negative (TSMOM-style 21d return < -2% + position losing)
+   - Trend structure breaks (price < SMA20 < SMA50 + ADX > 20 + MACD negative)
+   - Volatility spikes (ATR expands 1.5x from entry)
+   - Correlation contagion (symbol correlates > 0.8 with losing BTC, or 3+ positions losing with this being worst)
+   - Position held too long without profit (14-day max)
+
+3. **Risk Manager** — mechanical stop-loss at -10%, trailing stop after +5% gain, take-profit scale-out at +15/20/25%. This is the last line of defense and executes at the worst price.
+
+The goal: exit at Layer 1 or 2 (at -2% to -5%) instead of waiting for Layer 3 (at -10%). The exit overlay is the bridge between smart strategy exits and dumb mechanical stops.
+
+### Exit Signal Priority
+
+When multiple layers generate conflicting signals:
+- EXIT always beats BUY (capital preservation)
+- Exit overlay SELL + entry strategy SELL = boosted strength
+- Exit overlay SELL + entry strategy BUY = exit wins, BUY suppressed
+- Risk manager exits bypass everything (non-negotiable)
+
+### Exit Overlay Signal Pipeline Position
+
+```
+Regime detection → Entry strategy → EXIT OVERLAY → Polymarket overlay → Execute
+```
+
+The exit overlay runs AFTER entry strategies and BEFORE Polymarket overlay. It generates SELL-only signals with strength 50-100. Signals are logged to `strategy_signals_log` with `strategy_name="exit_overlay"`.
+
+---
+
 ## 6. Execution Gating
 
 Before any trade executes, it must pass these checks in order:
 
-1. **Risk check**: If circuit breaker is active, reject all BUYs.
+1. **Risk check**: If circuit breaker is active, attempt auto-reset (24h cooldown or ≥80% cash ratio). If still active, reject all BUYs.
 2. **Risk exits**: Process stop-loss/trailing-stop/take-profit exits before new signals.
 3. **Strategy routing**: If a backtested strategy is assigned, route through it. Fallback to legacy logic if the strategy produces no signal.
 4. **Strength gate**: Reject signals with strength < 50 (post-enhancement).
@@ -210,7 +247,7 @@ The LLM agent (Regi) operates within hard constraints that cannot be overridden 
 
 ## 8. Backtested Strategies
 
-Seven strategies have been backtested (166 total backtests). Each can be assigned to a portfolio via `strategy_registry`.
+Thirteen strategies have been backtested (143+ total backtests). Each can be assigned to a portfolio via `strategy_registry`.
 
 ### ScoreBased (Base)
 RSI oversold/overbought at 30/70. Min strength 30.

@@ -1,7 +1,7 @@
 # Edoras Database Reference
 
-**Last updated:** 2026-03-29
-**Verified against code:** 2026-03-29
+**Last updated:** 2026-04-05
+**Verified against code:** 2026-04-05
 **Database:** `crypto_data.db` (SQLite)
 
 ---
@@ -12,30 +12,31 @@
 
 | Table | Purpose | Key Columns | Rows | Latest Data |
 |-------|---------|-------------|------|-------------|
-| `candlesticks` | OHLCV price data across multiple timeframes (1m, 5m, 1h, 4h, 1d) for 238 symbols | symbol, timeframe, timestamp, open, high, low, close, volume | 780,999 | 2026-03-29 23:00 UTC |
-| `indicators` | Technical indicators (SMA, EMA, RSI, MACD, BB, ADX, ATR, probability bands) computed from candlesticks for 115 symbols | symbol, timeframe, timestamp, sma_20/50/200, ema_12/26, rsi_14, macd_*, bb_*, atr_14, prob_* | 630,460 | 2026-03-29 23:00 UTC |
+| `candlesticks` | OHLCV price data across multiple timeframes (1m, 5m, 1h, 4h, 1d) for 238 symbols | symbol, timeframe, timestamp, open, high, low, close, volume | 826,337 | 2026-04-01 |
+| `indicators` | Technical indicators (SMA, EMA, RSI, MACD, BB, ADX, ATR, probability bands) computed from candlesticks for 115 symbols | symbol, timeframe, timestamp, sma_20/50/200, ema_12/26, rsi_14, macd_*, bb_*, atr_14, prob_* | 641,194 | 2026-04-01 |
 | `ticks` | Real-time tick-level price data | symbol, price, volume, bid, ask, timestamp | 99 | 2026-03-11 |
-| `securities` | Master instrument registry covering crypto, equities, and DEX tokens | symbol, name, security_type, asset_class, exchange_id, chain, contract_address, is_dex | 330 | -- |
+| `securities` | Master instrument registry covering crypto, equities, prediction markets, and DEX tokens | symbol, name, security_type, asset_class, exchange_id, chain, contract_address, is_dex | 382 | -- |
 | `exchanges` | Venue definitions (CEX and DEX) with capability flags | code, name, exchange_type, chain, fee_model | 5 | -- |
 
 ### Trading
 
 | Table | Purpose | Key Columns | Rows | Latest Data |
 |-------|---------|-------------|------|-------------|
-| `trades` | All executed trades (paper and live) with cost tracking | portfolio_id, symbol, side, quantity, price, amount_usd, fee, strategy_id, tx_hash | 100 | 2026-03-29 |
-| `positions` | Current open/closed positions with stop-loss and take-profit levels | portfolio_id, symbol, quantity, entry_price, status, stop_loss_price, trailing_stop_price | 9 | 2026-03-27 |
-| `trade_outcomes` | Closed trade P&L with signal attribution | symbol, entry/exit_date, entry/exit_price, outcome_pct, outcome_usd, signal_type, market_regime | 32 | 2026-03-24 |
+| `trades` | All executed trades (paper and live) with cost tracking | portfolio_id, symbol, side, quantity, price, amount_usd, fee, strategy_id, tx_hash | 161 | 2026-04-02 |
+| `positions` | Current open/closed positions with stop-loss and take-profit levels | portfolio_id, symbol, quantity, entry_price, status, stop_loss_price, trailing_stop_price | 6 open | 2026-04-02 |
+| `trade_outcomes` | Closed trade P&L with signal attribution | symbol, entry/exit_date, entry/exit_price, outcome_pct, outcome_usd, signal_type, market_regime, **buy_trade_id** (FK→trades), **sell_trade_id** (FK→trades) | 47 | 2026-04-02 |
 | `cost_ledger` | Per-trade cost breakdown (fees, slippage, gas) | trade_id, portfolio_id, symbol, cost_type, amount_usd | 78 | 2026-03-21 |
 
 ### Strategy
 
 | Table | Purpose | Key Columns | Rows | Latest Data |
 |-------|---------|-------------|------|-------------|
-| `strategy_registry` | Active strategy definitions and parameters | name, class_name, strategy_type, default_params_json, is_active | 13 | 2026-03-18 |
-| `strategy_signals_log` | All signals emitted by strategies with execution/skip tracking | strategy_name, symbol, timeframe, signal_time, action, strength, reason, was_executed, skip_reason, outcome_pct | 302 | ongoing |
-| `strategy_performance` | Per-strategy performance metrics (backtest and live) | strategy_name, symbol, timeframe, source, sharpe_ratio, max_drawdown, win_rate | 166 | -- |
-| `strategy_catalogue` | Full backtest results archive with all risk metrics | strategy_name, symbol, timeframe, total_return, sharpe_ratio, sortino_ratio, max_drawdown, parameters_json | 162 | -- |
-| `strategy_swaps` | Log of regime-triggered strategy rotations | portfolio_id, symbol, old_strategy, new_strategy, reason, regime | 12 | -- |
+| `strategy_registry` | Active strategy definitions and parameters | name, class_name, strategy_type, default_params_json, is_active, **qualifying_catalogue_id** (FK→strategy_catalogue), **qualified_at** | 13 | 2026-03-18 |
+| `strategy_signals_log` | All signals emitted by strategies with execution/skip tracking | strategy_name, symbol, timeframe, signal_time, action, strength, reason, was_executed, skip_reason, outcome_pct | 434 | ongoing |
+| `strategy_performance` | Per-strategy performance metrics (backtest and live) | strategy_name, symbol, timeframe, source, sharpe_ratio, max_drawdown, win_rate, **catalogue_id** (FK→strategy_catalogue) | 166 | -- |
+| `strategy_catalogue` | Full backtest results archive with all risk metrics | strategy_name, symbol, timeframe, total_return, sharpe_ratio, sortino_ratio, max_drawdown, parameters_json, **source** (backtest/walk_forward/holdout_gate/portfolio_backtest) | 162 | -- |
+| `strategy_swaps` | Log of regime-triggered strategy rotations | portfolio_id, symbol, old_strategy, new_strategy, reason, regime | 38 | -- |
+| `strategy_overview` | **VIEW** — unified join of registry → catalogue → performance | registry_id, name, strategy_type, catalogue_id, symbol, sharpe_ratio, perf_source | -- | -- |
 
 ### Risk
 
@@ -96,6 +97,7 @@
 |-------|---------|-------------|------|-------------|
 | `collection_log` | Data pipeline health: last collection time per symbol/timeframe | symbol, timeframe, last_timestamp, data_points, status, error_message | 54 | 2026-03-29 |
 | `system_metrics` | Generic metrics store for pipeline monitoring | metric_name, metric_value, labels, timestamp | 0 | -- |
+| `_migrations` | Tracks applied schema migrations (idempotent) | name, applied_at | -- | -- |
 
 ### Vector (sqlite-vec)
 
@@ -289,16 +291,17 @@ ORDER BY ps.portfolio_id, ps.date;
 
 | Table | Writers | Readers |
 |-------|---------|---------|
-| `candlesticks` | crypto_data_collector, dex_data_collector, equity_data_collector, historical_backfill, intraday_update | backtest/engine, cli, compute_all_indicators, regime_monitor |
+| `candlesticks` | crypto_data_collector, dex_data_collector, equity_data_collector, historical_backfill, intraday_update | backtest/engine, backtest/portfolio_engine, cli, compute_all_indicators, regime_monitor |
 | `indicators` | compute_all_indicators, crypto_data_collector, equity_data_collector, historical_backfill, intraday_update | advanced_scorer, cli, signal_trading |
-| `trades` | dex_executor, paper_trading | cli, report_engine, trade_journal |
+| `trades` | dex_executor, paper_trading | cli, report_engine, trade_journal, backtest/migrations (backfill) |
 | `positions` | dex_executor, paper_trading | cli, dex_risk_rules, dex_trading_agent, trading_agent |
-| `trade_outcomes` | trade_journal | cli, report_engine |
-| `strategy_registry` | backtest/deployer | signal_trading |
-| `strategy_performance` | strategy_tracker | strategy_tracker |
+| `trade_outcomes` | trade_journal | cli, report_engine, backtest/migrations (backfill) |
+| `strategy_registry` | backtest/deployer, backtest/migrations | signal_trading |
+| `strategy_performance` | strategy_tracker, backtest/catalogue | strategy_tracker, backtest/migrations |
 | `strategy_signals_log` | signal_trading, strategy_tracker | cli, report_engine, scripts/verify_signal_flow |
-| `strategy_catalogue` | backtest/catalogue | regime_monitor |
-| `portfolios` | backtest/deployer, bootstrap_db | cli, config, regime_monitor |
+| `strategy_catalogue` | backtest/catalogue | regime_monitor, backtest/deployer, backtest/migrations |
+| `strategy_overview` | (VIEW, auto-joined) | cli, report_engine |
+| `portfolios` | backtest/deployer, bootstrap_db | cli, config, regime_monitor, backtest/portfolio_engine |
 | `accounts` | migration only | config |
 | `paper_snapshots` | paper_trading | cli, report_engine |
 | `sentiment_scores` | sentiment | report_engine, signal_trading, trading_agent |
@@ -318,7 +321,7 @@ The Mac Mini training pipeline pulls data from the laptop (primary host) using t
 
 ```bash
 # Pull entire database for local querying on Mac Mini
-scp satyamini@<laptop-ip>:~/.openclaw/workspace/projects/edoras/crypto_data.db /data/edoras/
+scp satyamini@<laptop-ip>:~/edoras/crypto_data.db /data/edoras/
 ```
 
 ### CSV Export (table-level)

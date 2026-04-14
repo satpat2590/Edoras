@@ -1,0 +1,14 @@
+{
+  "analysis": {
+    "market_assessment": "Market in neutral regime with VIX 24.8. No active signals detected.",
+    "risk_level": "moderate",
+    "trades": [],
+    "rebalance_recommended": false,
+    "hold_rationale": "Holding current positions due to lack of clear signals and neutral market regime. Cash position high at $0.00 (0.0% of portfolio).",
+    "watchlist": [
+      "BTC-USD",
+      "ETH-USD",
+      "BNB-USD"
+    ]
+  }
+}

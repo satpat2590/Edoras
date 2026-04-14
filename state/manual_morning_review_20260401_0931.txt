@@ -1,0 +1,10 @@
+**Morning Strategic Review**
+2026-04-01 09:31
+
+**Market:** Market in neutral regime with VIX 24.8. No active signals detected.
+**Risk Level:** moderate
+**Regime:** 🟡 neutral (VIX 24.8)
+
+**Portfolio:** $0.00 (Cash: $0.00)
+
+**No trades.** Holding current positions due to lack of clear signals and neutral market regime. Cash position high at $0.00 (0.0% of portfolio).
